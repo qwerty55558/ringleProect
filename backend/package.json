@@ -1,0 +1,11 @@
+{
+  "name": "@ringle/backend",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "build": "PATH=\"$HOME/.rbenv/shims:$PATH\" bundle install --quiet && PATH=\"$HOME/.rbenv/shims:$PATH\" bin/rails db:prepare",
+    "test": "PATH=\"$HOME/.rbenv/shims:$PATH\" bundle exec rspec",
+    "lint": "PATH=\"$HOME/.rbenv/shims:$PATH\" bundle exec rubocop",
+    "dev": "PATH=\"$HOME/.rbenv/shims:$PATH\" bin/rails s -p 3000"
+  }
+}
