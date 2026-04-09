@@ -1,0 +1,35 @@
+services:
+  ringle-backend:
+    image: ghcr.io/qwerty55558/ringleproect/backend:latest
+    platform: linux/amd64
+    container_name: ringle-backend
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      RAILS_ENV: production
+      RAILS_LOG_TO_STDOUT: "true"
+    volumes:
+      - backend_storage:/rails/storage
+    networks:
+      - ringle-network
+    restart: unless-stopped
+
+  ringle-frontend:
+    image: ghcr.io/qwerty55558/ringleproect/frontend:latest
+    platform: linux/amd64
+    container_name: ringle-frontend
+    ports:
+      - "3080:80"
+    depends_on:
+      - ringle-backend
+    networks:
+      - ringle-network
+    restart: unless-stopped
+
+volumes:
+  backend_storage:
+
+networks:
+  ringle-network:
+    name: ringle-network
