@@ -6,8 +6,24 @@
 #
 default: &default
   adapter: sqlite3
-  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  # Falcon multiplexes thousands of connections onto a single fiber
+  # event loop, but the SQLite C driver itself isn't fiber-aware — each
+  # query executes on a real OS thread. We size the AR pool well above
+  # the expected concurrent-query count so fibers never block on
+  # connection checkout. With long-lived SSE subscribers and the LLM
+  # streaming endpoint, 32 is comfortable headroom.
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 32 } %>
   timeout: 5000
+  # WAL (Write-Ahead Logging) lets readers and writers operate
+  # concurrently — the default rollback-journal mode serializes ALL
+  # access to the database, which would defeat the point of moving to
+  # a fiber-based async server. NORMAL synchronous mode is safe in WAL
+  # and trades a small durability window for an order of magnitude
+  # better write throughput.
+  pragmas:
+    journal_mode: WAL
+    synchronous: NORMAL
+    busy_timeout: 5000
 
 development:
   <<: *default

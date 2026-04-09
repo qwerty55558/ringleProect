@@ -7,25 +7,38 @@ require "json"
 # (system prompts, message conversion) lives in the calling service so the
 # client stays easy to stub in tests.
 class GeminiClient
-  BASE_URL = "https://generativelanguage.googleapis.com/v1beta".freeze
+  # NOTE: trailing slash is mandatory. Faraday treats any request path
+  # that starts with `/` as absolute and *replaces* the BASE_URL path
+  # entirely — meaning `@conn.post("/models/...")` against a BASE_URL
+  # without a trailing slash silently strips `/v1beta` from the URL and
+  # we get a 404 from Gemini. We pair this with leading-slash-free paths
+  # below (e.g. `"models/...":streamGenerateContent`).
+  BASE_URL = "https://generativelanguage.googleapis.com/v1beta/".freeze
 
-  # Free-tier models. We deliberately split chat and STT across two
-  # different model families so each draws from its own per-model RPD
-  # bucket (otherwise a single 20 RPD bucket caps the demo at ~10 turns).
-  #
-  #   gemini-2.5-flash      — LLM chat, streaming. GA, well-supported on
-  #                           v1beta `:streamGenerateContent`.
-  #   gemini-2.0-flash-lite — multimodal STT (audio → text). GA, accepts
-  #                           inline audio data and is on a separate RPD
-  #                           bucket from gemini-2.5-flash. We previously
-  #                           tried `gemini-2.5-flash-lite` here but it
-  #                           404s on `:generateContent` even though it
-  #                           shows up in the AI Studio quota dashboard.
-  DEFAULT_CHAT_MODEL  = "gemini-2.5-flash".freeze
-  DEFAULT_AUDIO_MODEL = "gemini-2.0-flash-lite".freeze
+  DEFAULT_CHAT_MODEL = "gemini-2.5-flash".freeze
+
+  # Ordered fallback chain for STT. transcribe() walks these in order
+  # and skips any that 429/404/5xx. The stt_artifacts lazy cache means
+  # repeat audio bytes only burn the chain once.
+  STT_MODEL_CHAIN = %w[
+    gemini-2.5-flash
+    gemini-2.0-flash
+    gemini-2.0-flash-lite
+    gemini-1.5-flash
+  ].freeze
+
+  RETRYABLE_STATUSES = [403, 404, 429, 500, 502, 503, 504].freeze
 
   class Error < StandardError; end
   class ConfigurationError < Error; end
+  class SafetyBlocked < Error; end
+
+  SAFETY_SETTINGS = [
+    { category: "HARM_CATEGORY_HARASSMENT",        threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+    { category: "HARM_CATEGORY_HATE_SPEECH",       threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" }
+  ].freeze
 
   def initialize(api_key: ENV["GEMINI_API_KEY"], conn: nil)
     raise ConfigurationError, "GEMINI_API_KEY is not set" if api_key.blank?
@@ -41,11 +54,34 @@ class GeminiClient
   # `system_instruction` is an optional string seed prompt.
   def stream_chat(messages:, system_instruction: nil, model: DEFAULT_CHAT_MODEL, &block)
     body = build_chat_body(messages: messages, system_instruction: system_instruction)
-    path = "/models/#{model}:streamGenerateContent"
+    path = "models/#{model}:streamGenerateContent"
 
-    @conn.post(path, body.to_json, request_headers.merge("Accept" => "application/json")) do |req|
+    # Buffer for the on_data callback so a non-200 response (e.g. a
+    # JSON-formatted 429 quota error) can be surfaced as a
+    # GeminiClient::Error after the request finishes — without it,
+    # `on_data` was silently swallowing the error body and we returned
+    # a "successful" stream with zero deltas.
+    error_body_buffer = +""
+    sse_buffer = +""
+    safety_state = { block_reason: nil, finish_reason: nil }
+
+    response = @conn.post(path, body.to_json, request_headers.merge("Accept" => "application/json")) do |req|
       req.params["alt"] = "sse"
-      req.options.on_data = proc { |chunk, _| handle_sse_chunk(chunk, &block) }
+      req.options.on_data = proc do |chunk, _|
+        error_body_buffer << chunk if error_body_buffer.bytesize < 1024
+        handle_sse_chunk(sse_buffer, chunk, safety_state, &block)
+      end
+    end
+
+    unless response.success?
+      raise Error, "Gemini API error #{response.status}: #{error_body_buffer.byteslice(0, 500)}"
+    end
+
+    if safety_state[:block_reason]
+      raise SafetyBlocked, "prompt blocked: #{safety_state[:block_reason]}"
+    end
+    if safety_state[:finish_reason] == "SAFETY"
+      raise SafetyBlocked, "response blocked: SAFETY"
     end
   end
 
@@ -53,15 +89,14 @@ class GeminiClient
   # when the controller can't use ActionController::Live (e.g. test env).
   def chat(messages:, system_instruction: nil, model: DEFAULT_CHAT_MODEL)
     body = build_chat_body(messages: messages, system_instruction: system_instruction)
-    res = @conn.post("/models/#{model}:generateContent", body.to_json, request_headers)
+    res = @conn.post("models/#{model}:generateContent", body.to_json, request_headers)
     raise_on_error!(res)
-    extract_text(JSON.parse(res.body))
+    parsed = JSON.parse(res.body)
+    detect_safety_block!(parsed)
+    extract_text(parsed)
   end
 
-  # Speech-to-text. Pass raw audio bytes plus its mime type. We send it as
-  # base64 inline_data to a multimodal Gemini model with a transcription
-  # instruction — this avoids needing a separate STT product/API key.
-  def transcribe(audio_bytes:, mime_type:, model: DEFAULT_AUDIO_MODEL)
+  def transcribe(audio_bytes:, mime_type:, models: STT_MODEL_CHAIN)
     body = {
       contents: [{
         role: "user",
@@ -72,9 +107,31 @@ class GeminiClient
       }],
       generationConfig: { temperature: 0 }
     }
-    res = @conn.post("/models/#{model}:generateContent", body.to_json, request_headers)
-    raise_on_error!(res)
-    extract_text(JSON.parse(res.body)).strip
+
+    last_error = nil
+    models.each do |model|
+      res = @conn.post("models/#{model}:generateContent", body.to_json, request_headers)
+      if res.success?
+        parsed = JSON.parse(res.body)
+        begin
+          detect_safety_block!(parsed)
+        rescue SafetyBlocked => e
+          last_error = "#{model} safety: #{e.message}"
+          Rails.logger.warn("[gemini] STT #{model} → safety blocked, trying next") if defined?(Rails)
+          next
+        end
+        Rails.logger.info("[gemini] STT ok: #{model}") if defined?(Rails)
+        return extract_text(parsed).strip
+      elsif RETRYABLE_STATUSES.include?(res.status)
+        last_error = "#{model} #{res.status}"
+        Rails.logger.warn("[gemini] STT #{model} → #{res.status}, trying next") if defined?(Rails)
+        next
+      else
+        raise Error, "Gemini API error #{res.status}: #{res.body[0..500]}"
+      end
+    end
+
+    raise Error, "all STT models exhausted: #{last_error}"
   end
 
   private
@@ -95,12 +152,21 @@ class GeminiClient
       contents: messages.map do |m|
         { role: m[:role] || m["role"], parts: [{ text: m[:text] || m["text"] }] }
       end,
-      generationConfig: { temperature: 0.7 }
+      generationConfig: { temperature: 0.7 },
+      safetySettings: SAFETY_SETTINGS
     }
     if system_instruction.present?
       body[:systemInstruction] = { role: "system", parts: [{ text: system_instruction }] }
     end
     body
+  end
+
+  def detect_safety_block!(parsed)
+    block_reason = parsed.dig("promptFeedback", "blockReason")
+    raise SafetyBlocked, "prompt blocked: #{block_reason}" if block_reason
+
+    finish = parsed.dig("candidates", 0, "finishReason")
+    raise SafetyBlocked, "response blocked: #{finish}" if finish == "SAFETY"
   end
 
   def raise_on_error!(res)
@@ -113,13 +179,10 @@ class GeminiClient
     parsed.dig("candidates", 0, "content", "parts")&.filter_map { |p| p["text"] }&.join("") || ""
   end
 
-  # Gemini SSE chunks are line-oriented `data: { ... }` blocks; we accumulate
-  # across partial chunks and yield the text deltas as they arrive.
-  def handle_sse_chunk(chunk, &block)
-    @sse_buffer ||= +""
-    @sse_buffer << chunk
-    while (idx = @sse_buffer.index("\n"))
-      line = @sse_buffer.slice!(0, idx + 1).chomp
+  def handle_sse_chunk(buffer, chunk, safety_state, &block)
+    buffer << chunk
+    while (idx = buffer.index("\n"))
+      line = buffer.slice!(0, idx + 1).chomp
       next unless line.start_with?("data: ")
 
       payload = line.sub("data: ", "")
@@ -127,10 +190,12 @@ class GeminiClient
 
       begin
         json = JSON.parse(payload)
+        safety_state[:block_reason]  ||= json.dig("promptFeedback", "blockReason")
+        safety_state[:finish_reason] ||= json.dig("candidates", 0, "finishReason")
         text = extract_text(json)
         block.call(text) if text.present?
       rescue JSON::ParserError
-        # partial frame — Faraday will deliver the rest in the next chunk
+        # partial frame — next chunk will complete it
       end
     end
   end

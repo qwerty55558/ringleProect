@@ -95,4 +95,11 @@ Rails.application.configure do
   # ]
   # Skip DNS rebinding protection for the default health check endpoint.
   # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+
+  # ─── Falcon / Fiber concurrency ──────────────────────────────────────
+  # See development.rb for the rationale. The same isolation level
+  # must be set in production so per-request AR connection checkout
+  # honours fiber boundaries instead of thread boundaries.
+  config.active_support.isolation_level = :fiber
+  config.active_record.async_query_executor = :global_thread_pool
 end
