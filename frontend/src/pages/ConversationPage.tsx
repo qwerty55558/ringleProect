@@ -442,6 +442,7 @@ export function ConversationPage() {
     try {
       setStatus('Generating speech…')
       const blob = await fetchTtsWithFallback(fixture.text)
+      if (!blob) throw new Error('TTS 음성을 생성하지 못했어요.')
       const wav = await recorder.simulate(blob)
       await runTurn(wav)
     } catch (e: unknown) {
