@@ -354,7 +354,7 @@ export function ConversationPage() {
           prev.map((t) => (t.id === assistantPlaceholderId ? { ...t, text: acc } : t)),
         )
         for (const sentence of splitter.feed(delta)) {
-          const p = fetchTtsWithFallback(sentence)
+          const p = fetchTtsWithFallback(sentence).then((b) => b ?? new Blob())
           sentenceBlobs.push(p)
           queue.enqueue(p)
         }
@@ -364,7 +364,7 @@ export function ConversationPage() {
 
     const tail = splitter.flush()
     if (tail) {
-      const p = fetchTtsWithFallback(tail)
+      const p = fetchTtsWithFallback(tail).then((b) => b ?? new Blob())
       sentenceBlobs.push(p)
       queue.enqueue(p)
     }
