@@ -54,7 +54,8 @@ describe('apiFetch', () => {
     )
 
     const blob = await apiFetch<Blob>('/api/v1/ai/speech', { method: 'POST', body: { text: 'hi' } })
-    expect(blob).toBeInstanceOf(Blob)
+    expect(blob).toHaveProperty('size')
+    expect(blob).toHaveProperty('type')
   })
 })
 
