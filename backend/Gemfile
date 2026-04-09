@@ -4,6 +4,8 @@ source "https://rubygems.org"
 gem "rails", "~> 7.2.2"
 # Use sqlite3 as the database for Active Record
 gem "sqlite3", ">= 1.4"
+# Use PostgreSQL in production
+gem "pg", "~> 1.5", group: :production
 # Falcon — fiber-based async web server. Replaces Puma so each open
 # SSE connection (/me/stream, /admin/memberships/stream, /ai/messages)
 # parks a cheap fiber in the event loop instead of pinning a real OS
