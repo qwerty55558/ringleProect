@@ -8,8 +8,8 @@ services:
       POSTGRES_DB: ringle_production
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     networks:
       - ringle-network
     restart: unless-stopped
@@ -20,11 +20,11 @@ services:
       retries: 5
 
   ringle-backend:
-    image: ghcr.io/qwerty55558/ringleproect/backend:latest
+    image: ghcr.io/qwerty55558/ringleproect/backend:develop
     platform: linux/amd64
     container_name: ringle-backend
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     env_file: .env
     environment:
       RAILS_ENV: production
@@ -40,11 +40,11 @@ services:
     restart: unless-stopped
 
   ringle-frontend:
-    image: ghcr.io/qwerty55558/ringleproect/frontend:latest
+    image: ghcr.io/qwerty55558/ringleproect/frontend:develop
     platform: linux/amd64
     container_name: ringle-frontend
-    ports:
-      - "3080:80"
+    expose:
+      - "80"
     depends_on:
       - ringle-backend
     networks:
@@ -57,4 +57,5 @@ volumes:
 
 networks:
   ringle-network:
+    external: true
     name: ringle-network
