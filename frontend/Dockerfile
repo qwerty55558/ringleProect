@@ -12,7 +12,9 @@ RUN pnpm install --frozen-lockfile --filter @ringle/frontend
 COPY frontend/ frontend/
 
 ARG VITE_API_BASE_URL=""
+ARG VITE_TZ_OFFSET="0"
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_TZ_OFFSET=$VITE_TZ_OFFSET
 RUN pnpm --filter @ringle/frontend run build
 
 # Serve static files with nginx

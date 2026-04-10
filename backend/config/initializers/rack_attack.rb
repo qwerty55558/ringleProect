@@ -10,7 +10,7 @@ class Rack::Attack
   AI_PATHS  = %r{\A/api/v1/ai/}
   # Both /me/stream and the admin variant. We separate them in the
   # throttle name so we can tune them independently if usage diverges.
-  SSE_PATHS = %r{\A/api/v1/(me/stream|admin/memberships/stream)\z}
+  SSE_PATHS = %r{\A/api/v1/(me/stream|admin/memberships/stream|study_materials/stream|analysis/stream)\z}
 
   # Identify caller by X-User-Id header (we don't have real auth per the spec).
   # SSE connections also pass user_id via the query string because EventSource
