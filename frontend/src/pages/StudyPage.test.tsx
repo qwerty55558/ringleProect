@@ -95,8 +95,8 @@ describe('StudyPage', () => {
 
     // Talk-tier user sees the conversation CTA + the new TTS button
     expect(screen.getByRole('button', { name: /핵심 표현 듣기/ })).toBeInTheDocument()
-    const cta = screen.getByRole('link', { name: /AI 와 대화로 학습 시작/ })
-    expect(cta).toHaveAttribute('href', '/conversation?study=1')
+    const cta = screen.getByRole('button', { name: /AI 와 대화로 학습 시작/ })
+    expect(cta).toBeInTheDocument()
   })
 
   it('hides the conversation CTA for study-only users and only shows the TTS button', async () => {
