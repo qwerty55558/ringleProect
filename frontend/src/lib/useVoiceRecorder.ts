@@ -61,8 +61,7 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
     idleTimerRef.current = null
 
     vadRef.current?.pause()
-    vadRef.current?.destroy?.()
-    vadRef.current = null
+    // VAD를 destroy하지 않음 — onnxruntime 재초기화 시 실패하므로 재사용
 
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
@@ -81,40 +80,27 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
     speechChunksRef.current = []
 
     try {
-      // Tuning notes (vad-web 0.0.30 RealTimeVADOptions):
-      //   - Lower thresholds than the defaults (0.5 / 0.35) so quiet speech
-      //     in a normal room registers; the recruiter mic is far from the
-      //     mouth and the defaults dropped a lot of utterances as misfires.
-      //   - 100ms minSpeechMs catches single-word answers ("yes", "okay")
-      //     that the previous 250ms cutoff threw away.
-      //   - Generous redemption + pre-pad so word boundaries don't get
-      //     clipped — VAD is still cheap on the bytes-per-utterance side.
-      const vad = await MicVAD.new({
-        baseAssetPath: VAD_BASE_ASSET_PATH,
-        onnxWASMBasePath: VAD_ONNX_BASE_PATH,
-        positiveSpeechThreshold: 0.35,
-        negativeSpeechThreshold: 0.2,
-        minSpeechMs: 100,
-        preSpeechPadMs: 250,
-        redemptionMs: 500,
-        onSpeechEnd: (audio) => {
-          speechChunksRef.current.push(audio)
-          if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
-          idleTimerRef.current = window.setTimeout(() => {
-            // Speech was captured before going silent → ask user to confirm
-            setIdlePrompt(true)
-          }, IDLE_TIMEOUT_MS)
-        },
-        onVADMisfire: () => {
-          // vad-web flagged the segment as too short to be real speech.
-          // We don't surface this — finalize() reports "no audio captured"
-          // if every segment was a misfire, which is the actionable signal.
-        },
-      })
-      vadRef.current = vad
+      if (!vadRef.current) {
+        const vad = await MicVAD.new({
+          baseAssetPath: VAD_BASE_ASSET_PATH,
+          onnxWASMBasePath: VAD_ONNX_BASE_PATH,
+          positiveSpeechThreshold: 0.35,
+          negativeSpeechThreshold: 0.2,
+          minSpeechMs: 100,
+          preSpeechPadMs: 250,
+          redemptionMs: 500,
+          onSpeechEnd: (audio) => {
+            speechChunksRef.current.push(audio)
+            if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
+            idleTimerRef.current = window.setTimeout(() => {
+              setIdlePrompt(true)
+            }, IDLE_TIMEOUT_MS)
+          },
+          onVADMisfire: () => {},
+        })
+        vadRef.current = vad
+      }
 
-      // separate analyser for the live waveform — vad-web owns its own
-      // worklet, so we open a second tap on the same MediaStream
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
       const ctx = new AudioContext()
@@ -138,7 +124,6 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
       vad.start()
       setState('recording')
 
-      // No speech at all after IDLE_TIMEOUT_MS → auto-cancel (nothing to send)
       idleTimerRef.current = window.setTimeout(() => {
         cleanup()
         speechChunksRef.current = []
@@ -148,7 +133,6 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
 
       stopTimerRef.current = window.setTimeout(() => {
         setError('Recording stopped — max length reached.')
-        // we still finalize whatever we captured
       }, MAX_RECORDING_MS)
     } catch (e: unknown) {
       cleanup()
