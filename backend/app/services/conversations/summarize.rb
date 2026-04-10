@@ -23,10 +23,23 @@ module Conversations
         text_to_summarize = "Previous context: #{existing}\n\n#{text_to_summarize}"
       end
 
-      summary = client.chat(
-        messages: [{ role: "user", text: text_to_summarize }],
-        system_instruction: SYSTEM_PROMPT
-      )
+      summary = nil
+      last_error = nil
+      GeminiClient::MODEL_CHAIN.each do |model|
+        begin
+          summary = client.chat(
+            messages: [{ role: "user", text: text_to_summarize }],
+            system_instruction: SYSTEM_PROMPT,
+            model: model
+          )
+          break
+        rescue GeminiClient::Error => e
+          last_error = e
+          Rails.logger.warn("[summarize] #{model} failed: #{e.message}, trying next")
+          next
+        end
+      end
+      raise last_error if last_error && summary.nil?
 
       conversation.update!(context_summary: summary.strip)
       summary.strip

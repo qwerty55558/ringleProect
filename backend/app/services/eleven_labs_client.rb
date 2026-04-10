@@ -63,13 +63,14 @@ class ElevenLabsClient
   end
 
   def synthesize(text:)
+    cleaned = sanitize_for_tts(text)
     body = {
-      text: text,
+      text: cleaned,
       model_id: @model_id,
       voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.75,
-        style: 0.0,
+        stability: 0.80,
+        similarity_boost: 0.70,
+        style: 0.15,
         use_speaker_boost: true
       }
     }
@@ -84,5 +85,13 @@ class ElevenLabsClient
     raise Error, "ElevenLabs error #{res.status}: #{res.body[0..400]}" unless res.success?
 
     res.body.b
+  end
+
+  private
+
+  def sanitize_for_tts(text)
+    text
+      .gsub(/_{2,}/, "something")
+      .strip
   end
 end

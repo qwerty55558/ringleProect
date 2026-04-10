@@ -17,14 +17,25 @@ class GeminiClient
 
   DEFAULT_CHAT_MODEL = "gemini-2.5-flash".freeze
 
-  # Ordered fallback chain for STT. transcribe() walks these in order
-  # and skips any that 429/404/5xx. The stt_artifacts lazy cache means
-  # repeat audio bytes only burn the chain once.
-  STT_MODEL_CHAIN = %w[
+  # Ordered fallback chain (quality descending). Each method walks these
+  # in order and skips any that 429/404/5xx. gemini-3.1-flash-lite has
+  # the most generous free-tier limits (500 RPD) so it's the last resort.
+  # Fallback chain (quality descending).
+  MODEL_CHAIN = %w[
+    gemini-3.1-flash-lite-preview
+    gemini-3-flash-preview
     gemini-2.5-flash
+    gemini-2.5-flash-lite
     gemini-2.0-flash
     gemini-2.0-flash-lite
-    gemini-1.5-flash
+  ].freeze
+
+  # STT — audio input 지원 모델만
+  STT_MODEL_CHAIN = %w[
+    gemini-2.5-flash
+    gemini-2.5-flash-lite
+    gemini-2.0-flash
+    gemini-2.0-flash-lite
   ].freeze
 
   RETRYABLE_STATUSES = [403, 404, 429, 500, 502, 503, 504].freeze
