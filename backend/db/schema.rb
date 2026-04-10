@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2026_04_09_000011) do
+ActiveRecord::Schema[7.2].define(version: 2026_04_10_051516) do
   create_table "active_storage_attachments", force: :cascade do |t|
     t.string "name", null: false
     t.string "record_type", null: false
@@ -39,12 +39,25 @@ ActiveRecord::Schema[7.2].define(version: 2026_04_09_000011) do
     t.index ["blob_id", "variation_digest"], name: "index_active_storage_variant_records_uniqueness", unique: true
   end
 
+  create_table "analyses", force: :cascade do |t|
+    t.integer "conversation_id", null: false
+    t.text "result"
+    t.datetime "analyzed_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "status", default: "pending", null: false
+    t.index ["conversation_id", "created_at"], name: "index_analyses_on_conversation_id_and_created_at"
+    t.index ["conversation_id"], name: "index_analyses_on_conversation_id"
+  end
+
   create_table "conversations", force: :cascade do |t|
     t.integer "user_id", null: false
     t.string "title"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.text "context_summary"
+    t.integer "study_material_id"
+    t.index ["study_material_id"], name: "index_conversations_on_study_material_id"
     t.index ["user_id", "created_at"], name: "index_conversations_on_user_id_and_created_at"
     t.index ["user_id"], name: "index_conversations_on_user_id"
   end
@@ -156,6 +169,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_04_09_000011) do
 
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
+  add_foreign_key "analyses", "conversations"
+  add_foreign_key "conversations", "study_materials"
   add_foreign_key "conversations", "users"
   add_foreign_key "memberships", "membership_plans"
   add_foreign_key "memberships", "users"
