@@ -2,15 +2,12 @@
 // HomePage so AdminPage (and any future page that renders memberships)
 // can share the exact same display logic.
 
+import { formatServerDate } from './serverTime'
+
 export const formatPriceKrw = (cents: number): string =>
   `₩${(cents / 100).toLocaleString('ko-KR')}`
 
-export const formatDateKo = (iso: string): string =>
-  new Date(iso).toLocaleDateString('ko-KR', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
+export const formatDateKo = (iso: string): string => formatServerDate(iso)
 
 export const FEATURE_LABELS: Record<string, string> = {
   study: 'AI 표현 학습',

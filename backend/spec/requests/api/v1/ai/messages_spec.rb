@@ -49,7 +49,7 @@ RSpec.describe "POST /api/v1/ai/messages", type: :request do
     allow(GeminiClient).to receive(:new).and_return(fake_client)
     allow(fake_client).to receive(:stream_chat) do |model:, **kwargs, &block|
       call_count += 1
-      if model == "gemini-2.5-flash"
+      if model == GeminiClient::MODEL_CHAIN.first
         raise GeminiClient::Error, "429 quota exceeded"
       end
       block.call("fallback ok")

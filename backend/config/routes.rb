@@ -16,6 +16,7 @@ Rails.application.routes.draw do
 
       # Conversation persistence — see ConversationsController for the
       # rationale (replay across reloads, explicit deletion, etc.).
+      delete "conversations/all", to: "conversations#destroy_all"
       resources :conversations, only: %i[index create show destroy] do
         resources :messages, only: %i[create], controller: "messages" do
           member { get :audio }
@@ -40,6 +41,8 @@ Rails.application.routes.draw do
         # Global SSE — every admin tab gets notified when ANY user's
         # membership state changes (purchase, grant, revoke, expiry).
         get "memberships/stream", to: "membership_stream#show"
+        delete "conversations", to: "conversations#destroy_all"
+        delete "analyses", to: "analyses#destroy_all"
 
         # Admin-only nuke-and-reseed for the study curriculum (DevPanel
         # button). Wipes AI rows, resets per-user generation counters,
@@ -52,11 +55,15 @@ Rails.application.routes.draw do
         post "study_materials/reset_generation_counters", to: "study_materials#reset_generation_counters"
       end
 
+      get "analysis/stream", to: "analysis_stream#show"
+
       namespace :ai do
         post "messages",       to: "messages#create"
         post "transcriptions", to: "transcriptions#create"
         post "speech",         to: "speech#create"
         post "translations",   to: "translations#create"
+        get  "analysis",       to: "analysis#show"
+        post "analysis",       to: "analysis#create"
       end
 
       # STT demo fixtures (office-mode replacement for the microphone).

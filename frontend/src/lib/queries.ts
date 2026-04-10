@@ -6,6 +6,7 @@ import { apiFetch } from './api'
 import { useUserStore } from './userStore'
 import type {
   AdminUser,
+  Conversation,
   MeResponse,
   MembershipPlan,
   PurchaseResponse,
@@ -22,6 +23,14 @@ export const queryKeys = {
   testCards: ['payments', 'testCards'] as const,
   studyMaterials: ['studyMaterials'] as const,
   studyMaterial: (id: number) => ['studyMaterial', id] as const,
+  conversations: ['conversations'] as const,
+}
+
+export function useConversations() {
+  return useQuery({
+    queryKey: queryKeys.conversations,
+    queryFn: () => apiFetch<Conversation[]>('/api/v1/conversations'),
+  })
 }
 
 export function useStudyMaterials(enabled = true) {
@@ -57,10 +66,10 @@ export function useGenerateStudyMaterial() {
         method: 'POST',
         body: { topic },
       }),
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10000),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.studyMaterials })
-      // Generation also bumps the user's per-user counter on the
-      // server, so refetch /me to update the "남은 횟수" pill.
       qc.invalidateQueries({ queryKey: ['me'] })
     },
   })
@@ -131,10 +140,15 @@ export function useMe() {
   const userId = useUserStore((s) => s.currentUserId)
   return useQuery({
     queryKey: queryKeys.me(userId),
-    queryFn: () => apiFetch<MeResponse>('/api/v1/me'),
+    queryFn: async () => {
+      const data = await apiFetch<MeResponse>('/api/v1/me')
+      if (data.server_time) {
+        const { setServerTimeOffset } = await import('./serverTime')
+        setServerTimeOffset(data.server_time)
+      }
+      return data
+    },
     enabled: userId !== null,
-    // SSE (MeStreamSubscriber) keeps the cache fresh in real time,
-    // so React Query never needs to refetch on mount / tab switch.
     staleTime: Infinity,
   })
 }

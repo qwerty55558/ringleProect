@@ -20,12 +20,14 @@
 //     because the conversation page would just bounce them.
 
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { ApiError } from '../lib/api'
 import { useGenerateStudyMaterial, useMe, useStudyMaterials } from '../lib/queries'
 import { fetchTtsWithFallback } from '../lib/ttsCache'
 import { toSpeakable } from '../lib/speakable'
 import { AudioQueue } from '../lib/audioQueue'
+import { useUserStore } from '../lib/userStore'
+import { appendMessage, createConversation } from '../lib/conversations'
 import type { StudyMaterial } from '../lib/types'
 
 const LEVEL_LABEL: Record<string, string> = {
@@ -208,8 +210,7 @@ function generateErrorMessage(err: unknown, limit: number): string {
 // 핵심 표현 듣기 button is local — switching to a different topic
 // or unmounting the page stops whatever is playing.
 function StudyDetail({ material, hasTalk }: { material: StudyMaterial; hasTalk: boolean }) {
-  const queueRef = useRef<AudioQueue | null>(null)
-  if (queueRef.current === null) queueRef.current = new AudioQueue()
+  const queueRef = useRef(AudioQueue.shared())
   const [playState, setPlayState] = useState<'idle' | 'playing'>('idle')
 
   // Cancel any in-flight playback when the user switches topics OR
@@ -283,11 +284,45 @@ function StudyDetail({ material, hasTalk }: { material: StudyMaterial; hasTalk: 
           </button>
         )}
         {hasTalk && (
-          <Link to={`/conversation?study=${material.id}`} className="btn ghost big">
-            AI 와 대화로 학습 시작 →
-          </Link>
+          <StartConversationButton material={material} />
         )}
       </div>
     </div>
+  )
+}
+
+function StartConversationButton({ material }: { material: StudyMaterial }) {
+  const navigate = useNavigate()
+  const existingId = useUserStore((s) => s.getConversationForCurrentUser())
+  const setConversation = useUserStore((s) => s.setConversationForCurrentUser)
+
+  const handleClick = async () => {
+    if (existingId) {
+      const ok = window.confirm('진행 중인 대화를 종료하고 새 학습을 시작할까요?')
+      if (!ok) return
+    } else {
+      const ok = window.confirm('이 커리큘럼으로 AI 대화를 시작할까요?')
+      if (!ok) return
+    }
+    const firstQuestion =
+      material.example_dialogue.find((d) => d.role === 'assistant')?.text ??
+      `안녕하세요! "${material.title}" 주제로 대화를 시작해볼게요.`
+    const created = await createConversation({ title: material.title, studyMaterialId: material.id })
+    const ttsBlob = await fetchTtsWithFallback(toSpeakable(firstQuestion))
+    await appendMessage({
+      conversationId: created.id,
+      role: 'assistant',
+      text: firstQuestion,
+      audio: ttsBlob ?? undefined,
+      audioFilename: 'greeting.mp3',
+    })
+    setConversation(created.id)
+    navigate(`/conversation?study=${material.id}`)
+  }
+
+  return (
+    <button type="button" className="btn ghost big" onClick={handleClick}>
+      AI 와 대화로 학습 시작 →
+    </button>
   )
 }

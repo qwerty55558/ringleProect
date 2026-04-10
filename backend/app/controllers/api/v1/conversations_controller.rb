@@ -12,7 +12,10 @@ module Api
 
       # POST /api/v1/conversations
       def create
-        conversation = current_user.conversations.create!(title: params[:title])
+        conversation = current_user.conversations.create!(
+          title: params[:title],
+          study_material_id: params[:study_material_id]
+        )
         render status: :created, json: serialize(conversation, with_messages: true)
       end
 
@@ -32,6 +35,13 @@ module Api
         head :no_content
       end
 
+      # DELETE /api/v1/conversations
+      def destroy_all
+        count = current_user.conversations.count
+        current_user.conversations.destroy_all
+        render json: { deleted: count }
+      end
+
       private
 
       def has_many_user_relation
@@ -42,7 +52,9 @@ module Api
         payload = {
           id: conversation.id,
           title: conversation.title,
-          created_at: conversation.created_at.iso8601
+          created_at: conversation.created_at.iso8601,
+          message_count: conversation.messages.size,
+          study_material_id: conversation.study_material_id
         }
         if with_messages
           payload[:messages] = conversation.messages.map { |m| MessageSerializer.call(m) }

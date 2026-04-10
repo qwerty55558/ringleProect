@@ -15,11 +15,7 @@ module Api
           rephrase the correct version inside your reply. Reply only in English.
         PROMPT
 
-        CHAT_MODEL_CHAIN = %w[
-          gemini-2.5-flash
-          gemini-2.0-flash
-          gemini-2.0-flash-lite
-        ].freeze
+        CHAT_MODEL_CHAIN = GeminiClient::MODEL_CHAIN
 
         before_action :require_user!
         before_action :require_talk_feature!
@@ -63,15 +59,29 @@ module Api
         def build_system_instruction
           parts = [DEFAULT_SYSTEM_PROMPT]
 
-          material_id = params[:study_material_id]
+          conv = params[:conversation_id].present? ?
+            current_user.conversations.find_by(id: params[:conversation_id]) : nil
+          material_id = params[:study_material_id].presence || conv&.study_material_id
           if material_id.present?
             material = StudyMaterial.find_by(id: material_id)
-            parts << "Today's curriculum:\n#{material.scenario_prompt}" if material
+            if material
+              curriculum = "Today's curriculum:\n#{material.scenario_prompt}"
+              if material.key_expressions.present?
+                curriculum += "\n\nKey expressions the learner should practice:\n"
+                curriculum += material.key_expressions.map { |e| "- #{e}" }.join("\n")
+              end
+              if material.example_dialogue.present?
+                curriculum += "\n\nExample dialogue flow:\n"
+                material.example_dialogue.each do |turn|
+                  curriculum += "#{turn['role']}: #{turn['text']}\n"
+                end
+              end
+              parts << curriculum
+            end
           end
 
-          if params[:conversation_id].present?
-            conv = current_user.conversations.find_by(id: params[:conversation_id])
-            if conv&.context_summary.present?
+          if conv
+            if conv.context_summary.present?
               parts << "Previous conversation context:\n#{conv.context_summary}"
             end
           end

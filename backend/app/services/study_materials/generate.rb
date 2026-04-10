@@ -65,10 +65,24 @@ module StudyMaterials
       end
 
       raw = +""
-      client.stream_chat(
-        messages: [{ role: "user", text: "Generate a study scenario for: #{topic}" }],
-        system_instruction: SYSTEM_PROMPT
-      ) { |delta| raw << delta }
+      last_error = nil
+      GeminiClient::MODEL_CHAIN.each do |model|
+        begin
+          raw = +""
+          client.stream_chat(
+            messages: [{ role: "user", text: "Generate a study scenario for: #{topic}" }],
+            system_instruction: SYSTEM_PROMPT,
+            model: model
+          ) { |delta| raw << delta }
+          last_error = nil
+          break
+        rescue GeminiClient::Error => e
+          last_error = e
+          Rails.logger.warn("[study/generate] #{model} failed: #{e.message}, trying next")
+          next
+        end
+      end
+      raise last_error if last_error
 
       payload = parse_json!(raw)
       attrs = build_attrs(payload).merge(ai_generated: true)

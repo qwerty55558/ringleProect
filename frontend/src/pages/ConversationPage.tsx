@@ -26,7 +26,7 @@
 // create a new conversation if none exists yet) so reloading the page
 // brings the entire history back, including audio.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ApiError, apiFetch, streamAiMessages, translateText } from '../lib/api'
 import { useMe, useSttFixtures, useStudyMaterial } from '../lib/queries'
@@ -34,7 +34,7 @@ import { useUserStore } from '../lib/userStore'
 import { useVoiceRecorder } from '../lib/useVoiceRecorder'
 import { AudioQueue } from '../lib/audioQueue'
 import { SentenceSplitter } from '../lib/sentences'
-import { fetchTtsWithFallback, getCachedAudio, rememberAudio } from '../lib/ttsCache'
+import { clearAudioCache, fetchTtsWithFallback, getCachedAudio, rememberAudio } from '../lib/ttsCache'
 import {
   appendMessage,
   createConversation,
@@ -42,25 +42,10 @@ import {
   getConversation,
 } from '../lib/conversations'
 import { LoadingScreen } from '../components/LoadingScreen'
-import type { ConversationMessage, SttFixture } from '../lib/types'
+import type { SttFixture } from '../lib/types'
 
 const DEFAULT_GREETING = "Hi! I'm Ringle, your English speaking partner. What's your name and what do you do?"
 
-// Module-level dedup so the canned opener plays exactly once per
-// conversation, even when React 18 StrictMode mounts the page twice
-// in dev (which would otherwise reset the per-instance useRef guard
-// and re-fire the greeting effect — i.e. play the audio twice).
-//
-// Keyed by conversationId because that's the unit we want to dedup
-// on: if the user wipes their conversation and a fresh one is
-// created, that new id has never been greeted and the opener
-// rightly plays again.
-const greetedConversationIds = new Set<number>()
-// StrictMode runs effects twice → two concurrent ensureConversation
-// calls → two createConversation API calls → two different IDs →
-// greetedConversationIds can't dedup by ID alone. This module-level
-// flag prevents the second call from entering the async path at all.
-let ensureInFlight = false
 
 type Turn = {
   // Server-assigned message id once the row exists; null only for the
@@ -105,120 +90,100 @@ export function ConversationPage() {
   // with no visible error.
   const [initState, setInitState] = useState<'loading' | 'error' | 'ready'>('loading')
   const [initError, setInitError] = useState<string | null>(null)
-  const greetingPlayed = useRef(false)
   const threadRef = useRef<HTMLDivElement>(null)
-  const queue = useMemo(() => new AudioQueue(), [])
+  const queue = useMemo(() => AudioQueue.shared(), [])
   const meQuery = useMe()
   const meFeatures = meQuery.data?.features
 
-  const persistedConversationId = useUserStore((s) => s.getConversationForCurrentUser())
   const setConversationForCurrentUser = useUserStore((s) => s.setConversationForCurrentUser)
-  const userId = useUserStore((s) => s.currentUserId)
 
-  // Hydrate (or create) the user's conversation. Re-runs when the active
-  // user changes or talk feature toggles on. Always lands on either
-  // initState='ready' (with conversationId set) or initState='error'
-  // — never leaves the page stuck in a half-initialised limbo.
-  const ensureConversation = useCallback(async () => {
-    if (meFeatures === undefined) return
-    if (ensureInFlight) return
-    if (!meFeatures.includes('talk')) {
-      setInitState('error')
-      setInitError('Talk 멤버십이 없어요.')
-      return
-    }
-    ensureInFlight = true
-    setInitState('loading')
-    setInitError(null)
-    try {
-      let id = persistedConversationId
-      let messages: ConversationMessage[] = []
-      if (id !== null) {
-        try {
-          const fetched = await getConversation(id)
-          messages = fetched.messages ?? []
-        } catch (e) {
-          if (e instanceof ApiError && e.status === 404) {
-            id = null
-          } else {
-            throw e
+  useEffect(() => {
+    let cancelled = false
+
+    const init = async () => {
+      if (meFeatures === undefined) return
+      if (!meFeatures.includes('talk')) {
+        setInitState('error')
+        setInitError('Talk 멤버십이 없어요.')
+        return
+      }
+      setInitState('loading')
+      setInitError(null)
+      const savedId = useUserStore.getState().getConversationForCurrentUser()
+      try {
+        // 기존 대화가 있으면 DB에서 불러오기 (커리큘럼이든 자유대화든 동일)
+        if (savedId !== null) {
+          try {
+            const fetched = await getConversation(savedId)
+            if (cancelled) return
+            const messages = fetched.messages ?? []
+            if (messages.length > 0) {
+              setConversationId(savedId)
+              setTurns(
+                messages.map((m) => ({
+                  id: turnKey(String(m.id)),
+                  role: m.role,
+                  text: m.text,
+                  audioPath: m.audio_url,
+                })),
+              )
+              setInitState('ready')
+              // 커리큘럼 첫 진입 (메시지 1개 + audio 있음) → 자동 재생
+              const first = messages[0]
+              if (messages.length === 1 && first.role === 'assistant' && first.audio_url) {
+                const blob = await fetchMessageAudio(first.audio_url)
+                if (cancelled) return
+                if (blob) {
+                  rememberAudio(turnKey(String(first.id)), blob)
+                  queue.reset()
+                  queue.enqueue(Promise.resolve(blob))
+                }
+              }
+              return
+            }
+          } catch (e) {
+            if (cancelled) return
+            if (e instanceof ApiError && e.status === 404) {
+              setConversationForCurrentUser(null)
+            } else {
+              throw e
+            }
           }
         }
+        if (cancelled) return
+
+        // 기존 대화 없음 → 자유대화 인사말 (대화방은 첫 답변 시 생성)
+        // 커리큘럼은 StudyPage에서 대화방 + 첫 메시지를 DB에 저장하므로 여기 안 옴
+        const gid = turnKey('greeting')
+        setTurns([{ id: gid, role: 'assistant', text: DEFAULT_GREETING }])
+        setInitState('ready')
+        const blob = await fetchTtsWithFallback(DEFAULT_GREETING)
+        if (cancelled) return
+        if (blob) {
+          rememberAudio(gid, blob)
+          queue.reset()
+          queue.enqueue(Promise.resolve(blob))
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setInitError(formatError(e))
+          setInitState('error')
+        }
       }
-      if (id === null) {
-        const created = await createConversation()
-        id = created.id
-        messages = created.messages ?? []
-        setConversationForCurrentUser(id)
-      }
-      setConversationId(id)
-      setTurns(
-        messages.map((m) => ({
-          id: turnKey(String(m.id)),
-          role: m.role,
-          text: m.text,
-          audioPath: m.audio_url,
-        })),
-      )
-      greetingPlayed.current = false
-      setInitState('ready')
-    } catch (e) {
-      setInitError(formatError(e))
-      setInitState('error')
-    } finally {
-      ensureInFlight = false
     }
-  }, [meFeatures, persistedConversationId, setConversationForCurrentUser])
 
-  useEffect(() => {
-    void ensureConversation()
+    void init()
+
+    return () => {
+      cancelled = true
+      queue.stop()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, meFeatures?.join(',')])
-
-  useEffect(() => {
-    return () => queue.stop()
-  }, [queue])
+  }, [meFeatures, studyId, studyQuery.isLoading])
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' })
   }, [turns])
-
-  // Speak the canned opener exactly once per fresh conversation.
-  //
-  // Idempotency lives in the module-level greetedConversationIds set
-  // (NOT a per-component ref) so that React 18 StrictMode's mount →
-  // unmount → mount dance in development cannot fire the greeting
-  // twice. The previous useRef guard was reset between StrictMode
-  // mounts, which is exactly the "재생이 2번 되거든" symptom.
-  //
-  // We also wait until:
-  //   - bootstrap is ready (conversation hydrated, id known)
-  //   - turns are empty (i.e. fresh thread, not a restored history)
-  //   - if /study?study=:id was supplied, the study material query has
-  //     settled (data OR error). On error we fall back to the default
-  //     greeting instead of waiting forever.
-  useEffect(() => {
-    if (initState !== 'ready') return
-    if (conversationId === null) return
-    if (greetedConversationIds.has(conversationId)) return
-    if (turns.length > 0) return
-    if (studyId !== null && studyQuery.isLoading) return
-
-    greetedConversationIds.add(conversationId)
-    greetingPlayed.current = true
-    const id = turnKey('greeting')
-    const greetingText =
-      studyQuery.data?.example_dialogue.find((d) => d.role === 'assistant')?.text ??
-      DEFAULT_GREETING
-    setTurns([{ id, role: 'assistant', text: greetingText }])
-    queue.reset()
-    queue.enqueue(
-      fetchTtsWithFallback(greetingText).then((blob) => {
-        if (blob) rememberAudio(id, blob)
-        return blob
-      }),
-    )
-  }, [initState, conversationId, turns.length, studyId, studyQuery.isLoading, studyQuery.data, queue])
 
   // ─── Render gate ─────────────────────────────────────────────────────
   // Bootstrap must finish before the conversation UI is allowed to mount.
@@ -248,12 +213,30 @@ export function ConversationPage() {
         <h2>대화를 불러오지 못했어요</h2>
         <p className="muted forbidden-card__body">{initError ?? '알 수 없는 오류가 발생했어요.'}</p>
         <div className="forbidden-card__cta">
-          <button type="button" className="btn primary" onClick={() => void ensureConversation()}>
+          <button type="button" className="btn primary" onClick={() => window.location.reload()}>
             다시 시도
           </button>
         </div>
       </div>
     )
+  }
+
+  const handleReset = async () => {
+    if (!window.confirm('대화를 종료하고 새 대화를 시작할까요?')) return
+    setConversationForCurrentUser(null)
+    setConversationId(null)
+    setError(null)
+    setStatus('')
+    clearAudioCache()
+    queue.stop()
+    queue.reset()
+    const gid = turnKey('greeting')
+    setTurns([{ id: gid, role: 'assistant', text: DEFAULT_GREETING }])
+    const blob = await fetchTtsWithFallback(DEFAULT_GREETING)
+    if (blob) {
+      rememberAudio(gid, blob)
+      queue.enqueue(Promise.resolve(blob))
+    }
   }
 
   const handleStart = async () => {
@@ -275,7 +258,13 @@ export function ConversationPage() {
   // the replay button works the instant the bubble appears, then we
   // promote the id to the canonical server id once persist completes.
   const runTurn = async (wav: Blob) => {
-    if (conversationId === null) return
+    let activeConversationId = conversationId
+    if (activeConversationId === null) {
+      const created = await createConversation()
+      activeConversationId = created.id
+      setConversationId(activeConversationId)
+      setConversationForCurrentUser(activeConversationId)
+    }
 
     const userPlaceholderId = turnKey(`pending-user-${crypto.randomUUID()}`)
     rememberAudio(userPlaceholderId, wav)
@@ -303,7 +292,7 @@ export function ConversationPage() {
     // (4) Persist (text + wav). Server returns the canonical id; we
     // promote the bubble and transfer the cached blob over.
     const persistedUser = await appendMessage({
-      conversationId,
+      conversationId: activeConversationId,
       role: 'user',
       text: sttText,
       audio: wav,
@@ -359,7 +348,7 @@ export function ConversationPage() {
           queue.enqueue(p)
         }
       },
-      { studyMaterialId: studyId ?? undefined, conversationId: conversationId ?? undefined },
+      { studyMaterialId: studyId ?? undefined, conversationId: activeConversationId ?? undefined },
     )
 
     const tail = splitter.flush()
@@ -386,7 +375,7 @@ export function ConversationPage() {
       return blobs.length > 0 ? new Blob(blobs, { type: 'audio/mpeg' }) : undefined
     })
     const persistedAssistant = await appendMessage({
-      conversationId,
+      conversationId: activeConversationId,
       role: 'assistant',
       text: acc,
       audio: stitched,
@@ -411,7 +400,7 @@ export function ConversationPage() {
   }
 
   const handleSubmit = async () => {
-    if (busy || conversationId === null) return
+    if (busy) return
     setBusy(true)
     try {
       const wav = await recorder.finalize()
@@ -436,7 +425,7 @@ export function ConversationPage() {
   // call hits Gemini and caches the artifact; subsequent calls hit
   // the lazy `stt_artifacts` cache.
   const handleFixture = async (fixture: SttFixture) => {
-    if (busy || conversationId === null) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
@@ -547,6 +536,17 @@ export function ConversationPage() {
                 disabled={busy}
                 onPick={handleFixture}
               />
+            )}
+
+            {turns.length > 0 && (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={handleReset}
+                disabled={busy}
+              >
+                대화 초기화
+              </button>
             )}
           </>
         )}

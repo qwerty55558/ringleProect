@@ -75,6 +75,30 @@ export function DevPanel() {
     window.location.reload()
   }
 
+  const handleDeleteAllConversations = async () => {
+    if (!window.confirm('DB의 모든 대화를 삭제할까요?\n이 작업은 되돌릴 수 없어요.')) return
+    try {
+      const result = await apiFetch<{ deleted: number }>('/api/v1/admin/conversations', { method: 'DELETE' })
+      setConversationForCurrentUser(null)
+      clearAudioCache()
+      queryClient.invalidateQueries()
+      window.alert(`${result.deleted}개의 대화를 삭제했어요.`)
+    } catch (e) {
+      window.alert(`삭제 실패: ${(e as Error).message}\n관리자 계정으로 전환 후 다시 시도해보세요.`)
+    }
+  }
+
+  const handleDeleteAllAnalyses = async () => {
+    if (!window.confirm('DB의 모든 분석 결과를 삭제할까요?\n이 작업은 되돌릴 수 없어요.')) return
+    try {
+      const result = await apiFetch<{ deleted: number }>('/api/v1/admin/analyses', { method: 'DELETE' })
+      queryClient.invalidateQueries()
+      window.alert(`${result.deleted}개의 분석 결과를 삭제했어요.`)
+    } catch (e) {
+      window.alert(`삭제 실패: ${(e as Error).message}\n관리자 계정으로 전환 후 다시 시도해보세요.`)
+    }
+  }
+
   const handleDeleteConversation = async () => {
     if (conversationId === null) {
       window.alert('현재 사용자의 저장된 대화가 없어요.')
@@ -219,6 +243,22 @@ export function DevPanel() {
         <button
           type="button"
           className="dev-panel-action danger"
+          onClick={handleDeleteAllConversations}
+        >
+          모든 대화 삭제
+        </button>
+
+        <button
+          type="button"
+          className="dev-panel-action danger"
+          onClick={handleDeleteAllAnalyses}
+        >
+          모든 분석 결과 삭제
+        </button>
+
+        <button
+          type="button"
+          className="dev-panel-action danger"
           onClick={handleWipeMemberships}
           disabled={wipeMemberships.isPending}
         >
@@ -252,11 +292,24 @@ export function DevPanel() {
           모든 로컬 데이터 초기화
         </button>
 
+        <div className="dev-panel-divider" />
+
         <div className="dev-panel-info-row">
           <span className="dev-panel-info-icon" tabIndex={0} aria-label="도움말">
             i
             <span className="dev-panel-info-tip" role="tooltip">
-              <b>멤버십 삭제</b> — DB의 <code>memberships</code> 테이블을 비웁니다.<br />
+              <b>앱 탭 안내</b><br />
+              <b>홈</b> — 멤버십 현황 조회 및 구매 (PG mock 결제).<br />
+              <b>학습</b> — AI 커리큘럼 학습 자료 열람, 핵심 표현 듣기, AI 대화 시작.<br />
+              <b>대화</b> — AI 튜터와 음성 영어 대화 (STT + LLM + TTS).<br />
+              <b>분석</b> — 대화 기록 기반 영어 레벨 분석 (문법/어휘/유창성 점수).<br />
+              <b>관리</b> — 어드민 전용 사용자/멤버십 관리.<br />
+              <br />
+              <b>Dev Tools 버튼 안내</b><br />
+              <b>현재 대화 삭제</b> — 현재 사용자의 진행 중인 대화를 영구 삭제.<br />
+              <b>모든 대화 삭제</b> — DB의 모든 대화와 메시지를 삭제 (admin only).<br />
+              <b>모든 분석 결과 삭제</b> — DB의 모든 분석 결과를 삭제 (admin only).<br />
+              <b>모든 멤버십 삭제</b> — DB의 <code>memberships</code> 테이블을 비웁니다.<br />
               <b>커리큘럼 리셋</b> — AI 토픽 삭제 + 모든 사용자 생성 카운터 0 + 시드 재적용.<br />
               <b>AI 토픽만 삭제</b> — AI 생성 row만 비웁니다 (카운터/시드 보존).<br />
               <b>AI 생성 횟수 초기화</b> — 모든 사용자의 생성 횟수 + 욕설 카운터 0.<br />

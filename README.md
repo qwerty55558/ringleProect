@@ -75,8 +75,8 @@ pnpm dev                      # http://localhost:5173
 | Backend | **Rails 7.2 (API only) + Falcon (fiber 기반 async)**              | Puma 대신 Falcon. SSE 연결당 fiber (~KB) 로 처리, 새로고침 폭주에 안전.                |
 | DB      | **SQLite (dev) / PostgreSQL-ready**                              | 셋업 friction 0. ActiveRecord 라 마이그레이션은 PG 도 그대로 동작.                     |
 | File    | **Active Storage (Disk service)**                                | 음성 blob 영속화. S3/GCS 로 갈아끼우려면 `storage.yml` 한 줄.                          |
-| LLM     | **Gemini CHAT_MODEL_CHAIN (3-model fallback, streaming)**        | 2.5-flash → 2.0-flash → 2.0-flash-lite. 429/에러 시 자동 폴백. SSE 지연 최소화.       |
-| STT     | **Gemini STT_MODEL_CHAIN (4-model fallback)**                    | 2.5-flash → 2.0-flash → 2.0-flash-lite → 1.5-flash. 429/404/SafetyBlocked 시 폴백.  |
+| LLM     | **Gemini MODEL_CHAIN (6-model fallback, streaming)**             | 3.1-flash-lite-preview → 3-flash-preview → 2.5-flash → 2.5-flash-lite → 2.0-flash → 2.0-flash-lite. 429/에러 시 자동 폴백. |
+| STT     | **Gemini STT_MODEL_CHAIN (4-model fallback)**                    | 2.5-flash → 2.5-flash-lite → 2.0-flash → 2.0-flash-lite. 오디오 입력 지원 모델만.    |
 | TTS     | **ElevenLabs + browser SpeechSynthesis fallback**                | ElevenLabs 실패 시 브라우저 내장 TTS 로 자동 전환. 무료 10K chars/월.                  |
 | 번역    | **Google Translate (무료 gtx API)**                               | Gemini 토큰 소모 없이 대화 버블 한글 번역. 30일 Rails.cache.                           |
 | VAD     | **@ricky0123/vad-web (Silero VAD)**                              | 브라우저에서 동작 → 공백 구간 절약 → STT 호출량 감소.                                  |
@@ -137,16 +137,18 @@ PG 가 raise 하면 멤버십/Payment 행 둘 다 롤백됩니다 (테스트에 
 ### 2-5. 대화 영속화
 
 ```
-┌──────────┐    1   N ┌──────────┐    1     N ┌────────────┐
-│   User   │──────────│Conversa- │────────────│  Message   │
-│          │          │tion      │            │ role,text, │
-│          │          │ title    │            │ position   │
-└──────────┘          └──────────┘            └─────┬──────┘
-                           │ destroy             │ has_one_attached
-                           │ cascade             ▼
-                           │              ┌──────────────┐
-                           │              │ Active       │
-                           │              │ Storage Blob │
+┌──────────┐    1   N ┌──────────────┐    1     N ┌────────────┐
+│   User   │──────────│ Conversation │────────────│  Message   │
+│          │          │ title,       │            │ role,text, │
+│          │          │ study_mat_id │            │ position   │
+└──────────┘          └──────┬───────┘            └─────┬──────┘
+                             │ 1    N                   │ has_one_attached
+                             │                          ▼
+                      ┌──────────────┐          ┌──────────────┐
+                      │  Analysis    │          │ Active       │
+                      │ status,result│          │ Storage Blob │
+                      │ analyzed_at  │          └──────────────┘
+                      └──────────────┘
                            │              │  (mp3/wav)   │
                            ▼              └──────────────┘
                       모든 메시지 + 첨부 blob 까지 cascade 삭제
@@ -161,7 +163,19 @@ PG 가 raise 하면 멤버십/Payment 행 둘 다 롤백됩니다 (테스트에 
 - 음성 blob 은 우리 자체 컨트롤러 (`MessagesController#audio`) 로만 서빙해서
   Active Storage 의 public URL 이 X-User-Id 검사를 우회하지 못하게 합니다.
 
-### 2-6. TTS 비용 절감 (TtsArtifact)
+### 2-6. AI 분석 기능
+
+`analysis` 멤버십 기능을 가진 사용자가 과거 대화를 선택하면 Gemini가 영어 레벨을
+분석합니다. 분석 결과는 `analyses` 테이블에 영속 저장되어 재방문 시 즉시 표시됩니다.
+
+- **비동기 처리**: POST 요청 → `Analysis` 레코드 생성(pending) → 백그라운드 Thread에서
+  Gemini 호출 → 완료 시 `AnalysisBus.publish` → SSE push로 프론트 알림
+- **분석 항목**: 종합 레벨(novice~advanced), 문법(점수+오류교정), 어휘(점수+대체표현),
+  유창성, 주제 관련성, 핵심 표현 활용도, 개선 제안
+- **쿨다운**: 동일 대화에 대해 30초 간격 제한
+- **한국어 피드백**: 분석 프롬프트가 한국어 응답을 지시
+
+### 2-7. TTS 비용 절감 (TtsArtifact)
 
 ```
                         text "Hi! I'm Ringle..."
@@ -324,11 +338,13 @@ backend/
 │  │  │  └─ study_materials_controller.rb      # reset, delete AI, counters
 │  │  └─ ai/
 │  │     ├─ messages_controller.rb             # SSE streaming LLM
+│  │     ├─ analysis_controller.rb            # 분석 요청/조회
+│  ├─ analysis_stream_controller.rb           # SSE /analysis/stream
 │  │     ├─ transcriptions_controller.rb
 │  │     ├─ speech_controller.rb
 │  │     └─ translations_controller.rb         # Google Translate
 │  ├─ models/   User, Membership, MembershipPlan, Payment,
-│  │            Conversation, Message, TtsArtifact, SttArtifact, StudyMaterial
+│  │            Conversation, Message, Analysis, TtsArtifact, SttArtifact, StudyMaterial
 │  └─ services/
 │     ├─ gemini_client.rb          # LLM streaming + STT (4-model fallback)
 │     ├─ eleven_labs_client.rb
@@ -340,13 +356,15 @@ backend/
 │     ├─ stt/                      # transcribe, fixture_library, fixture_seed
 │     ├─ study_materials/          # generate, curriculum_seed, reset
 │     ├─ conversations/summarize.rb  # 컨텍스트 메모리 요약
+│     ├─ conversations/analyze.rb   # AI 영어 레벨 분석
+│     ├─ analysis_bus.rb            # SSE 분석 상태 push
 │     ├─ me/                       # bus, snapshot
 │     ├─ admin/membership_bus.rb
 │     └─ study/bus.rb
 ├─ config/initializers/
 │  ├─ cors.rb
 │  └─ rack_attack.rb              # AI + SSE rate limit
-├─ db/migrate/                     # 15 migrations
+├─ db/migrate/                     # 18 migrations
 └─ spec/                           # rspec, 246 examples
 
 frontend/
@@ -366,6 +384,8 @@ frontend/
 │  │  ├─ audioQueue.ts
 │  │  ├─ sentences.ts
 │  │  ├─ useMeStream.ts            # SSE /me/stream subscriber
+│  │  ├─ useAnalysisStream.ts     # SSE /analysis/stream subscriber
+│  │  ├─ serverTime.ts            # 서버 시간 offset + 타임존 포매팅
 │  │  ├─ useAdminMembershipsStream.ts
 │  │  ├─ useStudyMaterialsStream.ts
 │  │  ├─ validation.ts             # zod schema (admin grant duration)
@@ -392,7 +412,7 @@ ConversationPage 가 30초짜리 테스트 멤버십을 사용 중일 때, 만�
 - **부하** — 페이지에 머무는 동안 계속 GET 호출 발생. 멀티 페이지/탭 환경에서
   `/me` 가 끊임없이 들어오는 게 로그 가독성도 해치고 의미 없는 DB hit.
 
-### 채널 세 개
+### 채널 네 개
 
 ```
 ┌──────────────────────┬─────────────────────┬─────────────────────────────────┐
@@ -401,6 +421,7 @@ ConversationPage 가 30초짜리 테스트 멤버십을 사용 중일 때, 만�
 │ Me::Bus              │ user_id             │ 본인 멤버십 변화 / 만료         │
 │ Admin::MembershipBus │ (글로벌)            │ 누구든 멤버십 변화/만료         │
 │ Study::Bus           │ (글로벌)            │ 커리큘럼 생성/리셋              │
+│ AnalysisBus          │ user_id             │ 분석 완료/실패                  │
 └──────────────────────┴─────────────────────┴─────────────────────────────────┘
 ```
 

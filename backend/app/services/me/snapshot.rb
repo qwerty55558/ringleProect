@@ -11,6 +11,7 @@ module Me
         },
         memberships: memberships.map { |m| serialize_membership(m) },
         features: user.available_features,
+        server_time: Time.current.iso8601(3),
         study_generations: {
           used: user.study_generations_used,
           limit: StudyMaterials::Generate::MAX_PER_USER,

@@ -1,6 +1,8 @@
 class Conversation < ApplicationRecord
   belongs_to :user
+  belongs_to :study_material, optional: true
   has_many :messages, -> { order(:position) }, dependent: :destroy
+  has_many :analyses, dependent: :destroy
 
   def append_message!(role:, text:, audio: nil, content_hash: nil)
     transaction do
