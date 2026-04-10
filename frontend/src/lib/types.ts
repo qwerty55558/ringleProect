@@ -38,8 +38,7 @@ export type MeResponse = {
   user: User
   memberships: Membership[]
   features: Feature[]
-  // Per-user lifetime cap on AI study topic generation. Surfaced here
-  // so the StudyPage can render "남은 횟수: N/3" without an extra fetch.
+  server_time: string
   study_generations: {
     used: number
     limit: number
@@ -67,6 +66,8 @@ export type Conversation = {
   id: number
   title: string | null
   created_at: string
+  message_count?: number
+  study_material_id?: number | null
   messages?: ConversationMessage[]
 }
 
@@ -141,6 +142,34 @@ export type StudyMaterial = {
   key_expressions: string[]
   example_dialogue: StudyDialogueLine[]
   ai_generated: boolean
+}
+
+// ─── Analysis ────────────────────────────────────────────────────────
+export type AnalysisResult = {
+  overall_level: 'novice' | 'beginner' | 'intermediate' | 'advanced'
+  grammar: {
+    score: number
+    mistakes: Array<{ original: string; corrected: string; explanation: string }>
+  }
+  vocabulary: {
+    score: number
+    frequent_words: string[]
+    alternatives: Array<{ used: string; suggestions: string[] }>
+  }
+  fluency: {
+    score: number
+    comment: string
+  }
+  topic_relevance: {
+    score: number
+    comment: string
+  }
+  key_expressions: {
+    used: string[]
+    missed: string[]
+    comment: string
+  } | null
+  suggestions: string[]
 }
 
 // New shape for /api/v1/study_materials — split into seeded vs

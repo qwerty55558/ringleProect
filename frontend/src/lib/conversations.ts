@@ -15,10 +15,13 @@ import type { Conversation, ConversationMessage } from './types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '')
 
-export function createConversation(title?: string): Promise<Conversation> {
+export function createConversation(opts?: { title?: string; studyMaterialId?: number }): Promise<Conversation> {
+  const body: Record<string, unknown> = {}
+  if (opts?.title) body.title = opts.title
+  if (opts?.studyMaterialId) body.study_material_id = opts.studyMaterialId
   return apiFetch<Conversation>('/api/v1/conversations', {
     method: 'POST',
-    body: title ? { title } : {},
+    body,
   })
 }
 

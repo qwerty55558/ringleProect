@@ -17,7 +17,14 @@ type Item = {
   promise: Promise<Blob | null>
 }
 
+let _instance: AudioQueue | null = null
+
 export class AudioQueue {
+  static shared(): AudioQueue {
+    if (!_instance) _instance = new AudioQueue()
+    return _instance
+  }
+
   private items: Item[] = []
   private playing = false
   private current: HTMLAudioElement | null = null

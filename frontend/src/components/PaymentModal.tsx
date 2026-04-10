@@ -14,6 +14,7 @@
 // render the error inline so the user can retry without re-opening.
 
 import { useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import type { MembershipPlan, PurchaseResponse, TestCard } from '../lib/types'
 import { formatDateKo, formatPlanDuration, formatPriceKrw } from '../lib/format'
 
@@ -75,7 +76,7 @@ export function PaymentModal({
     }
   }, [])
 
-  return (
+  return createPortal(
     <div
       className="payment-modal__backdrop"
       role="dialog"
@@ -113,7 +114,8 @@ export function PaymentModal({
           />
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
