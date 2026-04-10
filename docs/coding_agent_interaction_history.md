@@ -270,13 +270,15 @@ $ pnpm exec vitest run
 └──────────────────┴─────────────────────┴──────────────────────────┘
 ```
 
-SSE 채널 세 개로 분리:
+SSE 채널 네 개로 분리:
 
 - `Me::Bus` (per-user) → `/me/stream` → 자기 멤버십 변화/만료
 - `Admin::MembershipBus` (글로벌) → `/admin/memberships/stream` →
   누구의 멤버십이든 변화/만료. AdminPage 에서 구독.
 - `Study::Bus` (글로벌) → `/study_materials/stream` →
   커리큘럼 생성/리셋 시 모든 /study 탭 갱신.
+- `AnalysisBus` (per-user) → `/analysis/stream` →
+  분석 완료/실패 시 AnalysisPage 에서 구독.
 
 `Membership` 모델의 `after_commit` 콜백이 두 버스 모두에 publish. 시간 기반
 만료는 row mutation 이 없어서 콜백을 안 타기 때문에, SSE 컨트롤러가
@@ -367,3 +369,246 @@ Phase 0 → 1 은 database.yml 한 줄, 1 → 2 는 Bus 모듈 한 파일을 Red
 - Falcon 전환 직후에도 SSE 컨트롤러의 `response.stream.closed?` 폴링 체크가
   남아 있었고, fiber 환경에서 의미가 줄어든 걸 사람이 한 번 더 지적해야
   정리됐습니다.
+
+---
+
+## 7. 배포 인프라 구축 + 프로덕션 이슈 해결
+
+### 7-1. Docker + Nginx + GitHub Actions CI/CD
+
+배포 서버에 Docker Compose 기반 인프라를 세팅했습니다.
+
+```
+┌─────────────────────────────────────────────────┐
+│ Nginx (호스트)                                    │
+│  ├─ ringle.clauminirockpt.me → ringle-frontend  │
+│  └─ ringleapi.clauminirockpt.me → ringle-backend│
+│                                                   │
+│  ┌── Docker (ringle-network) ──────────────────┐ │
+│  │ ringle-frontend (nginx:alpine)  :80         │ │
+│  │ ringle-backend  (Rails+Falcon)  :3000       │ │
+│  │ ringle-db       (postgres:16)   :5432       │ │
+│  └─────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+GitHub Actions 워크플로우가 `main`/`develop` push 시 자동 빌드 → GHCR 이미지 push.
+프론트엔드 `VITE_API_BASE_URL`은 GitHub Repository Secret으로 빌드 타임에 주입.
+
+### 7-2. 프로덕션 이슈 진단 흐름
+
+배포 후 발견된 이슈를 모델과 함께 하나씩 진단한 기록:
+
+```
+┌───────────────────────────┬───────────────────────────────────────────┐
+│ 이슈                       │ 원인 → 해결                               │
+├───────────────────────────┼───────────────────────────────────────────┤
+│ URL 파싱 에러              │ VITE_API_BASE_URL 빈 문자열 → Repo Secret │
+│                           │ 에서 Environment Secret으로 잘못 설정      │
+│ 502 Bad Gateway           │ Nginx upstream이 127.0.0.1 → Docker 컨테  │
+│                           │ 이너 이름으로 변경                         │
+│ 301 리다이렉트 루프        │ Rails force_ssl + assume_ssl 미설정 →     │
+│                           │ config.assume_ssl = true 추가              │
+│ CORS 에러                 │ Nginx API server block 누락 → 추가         │
+└───────────────────────────┴───────────────────────────────────────────┘
+```
+
+이 중 가장 까다로웠던 것은 **Environment Secret vs Repository Secret** 차이. GitHub
+Actions에서 `environment:` 지시자 없이 Environment Secret을 참조하면 빈 문자열이
+주입되는데, 이 에러는 빌드 로그에서 마스킹되어 보이지 않았습니다.
+
+`[SCREENSHOT: deploy_502_fix.png — 502 에러 진단 과정]`
+
+---
+
+## 8. AI 분석 기능 (Analysis) 구현
+
+과제 PDF의 세 번째 핵심 기능 — "AI와 나눈 대화를 토대로 레벨을 분석해주는
+분석 기능" 을 구현한 과정입니다.
+
+### 8-1. Plan 모드에서 설계
+
+Claude Code의 Plan 모드를 사용해서 기존 코드 탐색 → 설계 → 사용자 승인 → 구현
+순서로 진행했습니다. 모델이 자율적으로 탐색한 결과를 바탕으로:
+
+- 기존 SSE 패턴 (`MessagesController`, `Me::Bus`)
+- 기존 서비스 패턴 (`Conversations::Summarize`)
+- 프론트 쿼리 패턴 (`useMe`, `useStudyMaterials`)
+
+을 파악하고, 동일한 아키텍처 위에 분석 기능을 얹는 방향으로 결정했습니다.
+
+### 8-2. 백엔드 구현
+
+```
+┌─────────────────────────┬─────────────────────────────────────────────┐
+│ 파일                     │ 역할                                        │
+├─────────────────────────┼─────────────────────────────────────────────┤
+│ Analysis (모델)          │ status(pending/completed/failed) + result   │
+│ Conversations::Analyze  │ Gemini 프롬프트 구성 + 모델 체인 fallback    │
+│ AnalysisController      │ GET (저장된 결과) / POST (비동기 분석 요청)   │
+│ AnalysisStreamController│ SSE push — 분석 완료 시 프론트 알림           │
+│ AnalysisBus             │ in-process pub/sub (Me::Bus 와 동일 패턴)    │
+└─────────────────────────┴─────────────────────────────────────────────┘
+```
+
+분석은 **비동기 처리**: POST가 pending 레코드를 만들고 즉시 202 응답 → 백그라운드
+Thread에서 Gemini 호출 → 완료 시 DB 저장 + AnalysisBus.publish → 프론트 SSE 수신.
+
+프롬프트는 한국어 응답을 지시하며, 분석 항목은:
+종합 레벨, 문법(점수+오류교정), 어휘(점수+대체표현), 유창성, 주제 관련성,
+핵심 표현 활용도, 개선 제안.
+
+### 8-3. 프론트엔드 구현
+
+`AnalysisPage.tsx`는 사이드바(대화 목록) + 상세 패널(분석 결과) 구조.
+상태 머신: `idle → polling → done | error`.
+
+`useAnalysisStream` 훅이 `/analysis/stream` SSE를 구독하고, `changed` 이벤트
+수신 시 GET으로 결과를 fetch합니다. 화면 이탈 후 복귀해도 pending 상태를
+감지하여 SSE 대기 → 완료 즉시 결과 표시.
+
+`[SCREENSHOT: analysis_result.png — 분석 결과 화면 (레벨 뱃지 + 점수 바 + 문법 테이블)]`
+
+### 8-4. 사용자 피드백으로 개선된 것
+
+이번 라운드에서 사용자 피드백으로 변경된 사항:
+
+- "분석 내용도 저장되나?" → `analyses` 테이블 추가, 결과 영속화
+- "비동기로 하라니까" → SSE 스트리밍 → POST 즉시 응답 + Thread 백그라운드 실행
+- "SSE로 하셈, polling 말고" → AnalysisBus + SSE stream 추가
+- "한글로 해주셈" → 프롬프트 한국어 응답 지시
+- "쿨다운 5분은 너무 김" → 30초로 변경
+- "devtools에 분석 초기화 넣어줘" → admin DELETE /analyses 엔드포인트 추가
+
+---
+
+## 9. Gemini 모델 체인 전면 업데이트
+
+### 9-1. 무료 할당량 문제
+
+Gemini 무료 티어의 RPD(일일 요청 수)가 모델당 20회로 제한되어 있어서, 단일
+모델 사용 시 데모 도중 429 에러가 빈번했습니다.
+
+### 9-2. 6-model fallback 체인
+
+v1beta API에서 사용 가능한 모델을 전수 조사(`ListModels` API 호출)하여
+품질 내림차순 + RPD 넉넉한 순서로 체인을 구성했습니다:
+
+```
+┌───────────────────────────┬─────┬────────┐
+│ 모델                       │ RPM │ RPD    │
+├───────────────────────────┼─────┼────────┤
+│ gemini-3.1-flash-lite-prev│ 15  │ 500    │
+│ gemini-3-flash-preview    │ 5   │ 20     │
+│ gemini-2.5-flash          │ 5   │ 20     │
+│ gemini-2.5-flash-lite     │ 10  │ 20     │
+│ gemini-2.0-flash          │ --  │ --     │
+│ gemini-2.0-flash-lite     │ --  │ --     │
+└───────────────────────────┴─────┴────────┘
+```
+
+STT용 체인은 오디오 입력을 지원하는 모델만 (`gemini-3.1-flash-lite-preview`의
+Live API 미지원으로 제외).
+
+### 9-3. 전체 적용
+
+Gemini를 사용하는 **모든 곳**에 체인을 적용했습니다:
+
+```
+┌───────────────────────────┬────────────────┐
+│ 위치                       │ 체인            │
+├───────────────────────────┼────────────────┤
+│ MessagesController (대화) │ MODEL_CHAIN    │
+│ Conversations::Analyze    │ MODEL_CHAIN    │
+│ Conversations::Summarize  │ MODEL_CHAIN    │
+│ StudyMaterials::Generate  │ MODEL_CHAIN    │
+│ GeminiClient#transcribe   │ STT_MODEL_CHAIN│
+└───────────────────────────┴────────────────┘
+```
+
+`[SCREENSHOT: model_chain_fallback.png — 서버 로그에서 429 → 다음 모델 fallback 로그]`
+
+---
+
+## 10. 대화 관리 / UX 개선
+
+### 10-1. 대화 초기화 = 소프트 리셋
+
+"대화 초기화" 버튼은 DB에서 대화를 삭제하지 않고 로컬 매핑만 해제합니다
+(소프트 리셋). 분석 탭에서 과거 대화 기록이 유지됩니다. 하드 리셋(DB 삭제)은
+DevTools에서만 가능합니다.
+
+### 10-2. 커리큘럼 대화 흐름 정비
+
+학습 탭에서 "AI 와 대화로 학습 시작" 버튼 클릭 시:
+
+1. 기존 대화 있으면 confirm → 로컬 매핑 해제
+2. `createConversation({ title, studyMaterialId })` → DB에 대화방 생성 + study_material_id 저장
+3. 커리큘럼 첫 질문을 assistant 메시지로 DB에 저장 (TTS audio 포함)
+4. `/conversation?study=X` 로 이동
+5. ConversationPage: savedId → DB 조회 → 메시지 로드 + 첫 메시지 자동 재생
+
+`study_material_id`가 conversation에 저장되므로, 탭 이동 후 돌아와도 AI 응답에
+커리큘럼 문맥(`scenario_prompt` + `key_expressions` + `example_dialogue`)이
+자동 포함됩니다.
+
+### 10-3. TTS 음질 개선
+
+ElevenLabs 호출 전에 텍스트를 전처리합니다:
+- `___` (빈칸 placeholder) → `something` 으로 치환 (백엔드 `sanitize_for_tts`)
+- `stability: 0.80`, `similarity_boost: 0.70`, `style: 0.15` 로 자연스러운 톤
+
+### 10-4. AudioQueue 싱글톤
+
+`AudioQueue.shared()` 로 앱 전체에서 하나의 오디오만 재생되게 변경.
+학습 탭에서 재생 중에 대화 탭으로 이동하면 이전 재생이 자동 중단됩니다.
+
+### 10-5. 서버 시간 동기화
+
+`/me` 응답에 `server_time` 필드를 추가하고, 프론트에서 서버-클라이언트 시계
+차이를 계산합니다. 모든 날짜 표시는 `VITE_TZ_OFFSET` 환경변수 기반으로
+offset 적용 (기본값 UTC, 배포 시 `+9` 설정 가능).
+
+`[SCREENSHOT: server_time_sync.png — 분석 결과의 시간 표시]`
+
+---
+
+## 11. StrictMode 대응
+
+React 18 StrictMode는 개발 환경에서 effect를 2번 실행합니다. 이로 인해:
+
+- TTS 보이스가 2번 재생
+- API 호출이 2번 발생
+- 상태가 꼬여서 "Loading conversation" 무한 표시
+
+해결 패턴: `cancelled` 플래그를 effect cleanup에서 세팅.
+
+```typescript
+useEffect(() => {
+  let cancelled = false
+  const init = async () => {
+    const data = await fetchData()
+    if (cancelled) return    // StrictMode 2차 실행 시 여기서 중단
+    setState(data)
+  }
+  void init()
+  return () => { cancelled = true }
+}, [deps])
+```
+
+이 패턴을 ConversationPage 초기화에 적용해서 모든 StrictMode 이슈를 해결했습니다.
+
+---
+
+## 12. 최종 테스트 결과
+
+```
+$ bundle exec rspec
+246 examples, 0 failures
+
+$ pnpm exec vitest run
+ Test Files  6 passed (6)
+      Tests  18 passed (18)
+```
+
+`[SCREENSHOT: final_tests.png — 전체 테스트 통과 출력]`
