@@ -121,7 +121,7 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
       }
       tick()
 
-      vad.start()
+      vadRef.current!.start()
       setState('recording')
 
       idleTimerRef.current = window.setTimeout(() => {
