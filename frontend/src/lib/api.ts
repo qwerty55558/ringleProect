@@ -150,3 +150,62 @@ export async function streamAiMessages(
     }
   }
 }
+
+export async function streamAnalysis(
+  conversationId: number,
+  onDelta: (chunk: string) => void,
+  opts: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const res = await fetch(buildUrl('/api/v1/ai/analysis'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ conversation_id: conversationId }),
+    signal: opts.signal,
+  })
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, null, `Analysis stream failed: ${res.status}`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent = 'message'
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let idx
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, idx).trim()
+      buffer = buffer.slice(idx + 1)
+      if (line === '') {
+        currentEvent = 'message'
+        continue
+      }
+      if (line.startsWith('event:')) {
+        currentEvent = line.slice(6).trim()
+        continue
+      }
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim()
+        if (!payload) continue
+        if (currentEvent === 'done') return
+        if (currentEvent === 'error') {
+          throw new ApiError(502, payload, 'Analysis stream error')
+        }
+        try {
+          const obj = JSON.parse(payload) as { delta?: string }
+          if (obj.delta) onDelta(obj.delta)
+        } catch {
+          /* ignore malformed frame */
+        }
+      }
+    }
+  }
+}
