@@ -507,8 +507,8 @@ v1beta API에서 사용 가능한 모델을 전수 조사(`ListModels` API 호�
 └───────────────────────────┴─────┴────────┘
 ```
 
-STT용 체인은 오디오 입력을 지원하는 모델만 (`gemini-3.1-flash-lite-preview`의
-Live API 미지원으로 제외).
+STT용 체인도 MODEL_CHAIN과 동일하게 통일 (generateContent + audio inline_data
+방식이라 Live API 미지원 모델도 사용 가능).
 
 ### 9-3. 전체 적용
 
@@ -522,7 +522,7 @@ Gemini를 사용하는 **모든 곳**에 체인을 적용했습니다:
 │ Conversations::Analyze    │ MODEL_CHAIN    │
 │ Conversations::Summarize  │ MODEL_CHAIN    │
 │ StudyMaterials::Generate  │ MODEL_CHAIN    │
-│ GeminiClient#transcribe   │ STT_MODEL_CHAIN│
+│ GeminiClient#transcribe   │ MODEL_CHAIN    │
 └───────────────────────────┴────────────────┘
 ```
 

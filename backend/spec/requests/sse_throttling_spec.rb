@@ -19,10 +19,13 @@ RSpec.describe "SSE refresh-storm defense", type: :request do
   describe "Rack::Attack throttle on /api/v1/me/stream opens" do
     around do |example|
       previous_store = Rack::Attack.cache.store
+      previous_enabled = Rack::Attack.enabled
       Rack::Attack.cache.store = ActiveSupport::Cache::MemoryStore.new
       Rack::Attack.enabled = true
+      Rack::Attack.reset!
       example.run
     ensure
+      Rack::Attack.enabled = previous_enabled
       Rack::Attack.cache.store = previous_store
       Rack::Attack.cache.store&.clear if Rack::Attack.cache.store.respond_to?(:clear)
     end

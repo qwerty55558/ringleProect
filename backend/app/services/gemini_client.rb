@@ -30,13 +30,7 @@ class GeminiClient
     gemini-2.0-flash-lite
   ].freeze
 
-  # STT — audio input 지원 모델만
-  STT_MODEL_CHAIN = %w[
-    gemini-2.5-flash
-    gemini-2.5-flash-lite
-    gemini-2.0-flash
-    gemini-2.0-flash-lite
-  ].freeze
+  STT_MODEL_CHAIN = MODEL_CHAIN
 
   RETRYABLE_STATUSES = [403, 404, 429, 500, 502, 503, 504].freeze
 
