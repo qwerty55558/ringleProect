@@ -75,14 +75,28 @@ export async function apiFetch<T = unknown>(path: string, opts: RequestOptions =
   return (await res.blob()) as unknown as T
 }
 
+export async function translateText(text: string): Promise<string> {
+  const res = await apiFetch<{ translation: string; cache: string }>('/api/v1/ai/translations', {
+    method: 'POST',
+    body: { text },
+  })
+  return res.translation
+}
+
 // Streams a Server-Sent Events response from POST /api/v1/ai/messages,
 // yielding text deltas one chunk at a time. Resolves when the server
-// emits the `done` event or the response stream closes.
+// emits the `done` event or the response stream closes. Accepts an
+// optional `studyMaterialId` so a /study?study=:id session can prime
+// the assistant's system prompt with the chosen curriculum.
 export async function streamAiMessages(
   messages: Array<{ role: 'user' | 'assistant'; text: string }>,
   onDelta: (chunk: string) => void,
-  signal?: AbortSignal,
+  opts: { signal?: AbortSignal; studyMaterialId?: number; conversationId?: number } = {},
 ): Promise<void> {
+  const body: Record<string, unknown> = { messages }
+  if (opts.studyMaterialId !== undefined) body.study_material_id = opts.studyMaterialId
+  if (opts.conversationId !== undefined) body.conversation_id = opts.conversationId
+
   const res = await fetch(buildUrl('/api/v1/ai/messages'), {
     method: 'POST',
     headers: {
@@ -90,8 +104,8 @@ export async function streamAiMessages(
       Accept: 'text/event-stream',
       ...authHeaders(),
     },
-    body: JSON.stringify({ messages }),
-    signal,
+    body: JSON.stringify(body),
+    signal: opts.signal,
   })
   if (!res.ok || !res.body) {
     throw new ApiError(res.status, null, `AI stream failed: ${res.status}`)

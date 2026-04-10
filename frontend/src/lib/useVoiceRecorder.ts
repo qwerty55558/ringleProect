@@ -15,6 +15,7 @@ import { MicVAD } from '@ricky0123/vad-web'
 import { concatFloat32, encodeWav } from './audio'
 
 const MAX_RECORDING_MS = 30_000        // hard cap so a stuck mic can't bleed quota
+const IDLE_TIMEOUT_MS  = 10_000        // auto-cancel if no speech detected for 10s
 const VAD_SAMPLE_RATE  = 16_000        // vad-web feeds back 16kHz mono float32
 // Served locally from public/vad/ — see vite.config.ts → vadAssetsPlugin.
 // We used to load from a CDN; jsdelivr occasionally 404s the .onnx file
@@ -28,15 +29,19 @@ type UseVoiceRecorderResult = {
   state: RecorderState
   amplitudes: number[]
   error: string | null
+  idlePrompt: boolean
   start: () => Promise<void>
   cancel: () => void
   finalize: () => Promise<Blob | null>
+  dismissIdlePrompt: () => void
+  simulate: (blob: Blob) => Promise<Blob>
 }
 
 export function useVoiceRecorder(): UseVoiceRecorderResult {
   const [state, setState] = useState<RecorderState>('idle')
   const [amplitudes, setAmplitudes] = useState<number[]>(new Array(32).fill(4))
   const [error, setError] = useState<string | null>(null)
+  const [idlePrompt, setIdlePrompt] = useState(false)
 
   const vadRef = useRef<MicVAD | null>(null)
   const speechChunksRef = useRef<Float32Array[]>([])
@@ -45,12 +50,15 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef<number | null>(null)
   const stopTimerRef = useRef<number | null>(null)
+  const idleTimerRef = useRef<number | null>(null)
 
   const cleanup = useCallback(() => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
     if (stopTimerRef.current !== null) window.clearTimeout(stopTimerRef.current)
+    if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
     rafRef.current = null
     stopTimerRef.current = null
+    idleTimerRef.current = null
 
     vadRef.current?.pause()
     vadRef.current?.destroy?.()
@@ -90,8 +98,12 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
         preSpeechPadMs: 250,
         redemptionMs: 500,
         onSpeechEnd: (audio) => {
-          // audio is a Float32Array of just the voiced region @ 16kHz
           speechChunksRef.current.push(audio)
+          if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
+          idleTimerRef.current = window.setTimeout(() => {
+            // Speech was captured before going silent → ask user to confirm
+            setIdlePrompt(true)
+          }, IDLE_TIMEOUT_MS)
         },
         onVADMisfire: () => {
           // vad-web flagged the segment as too short to be real speech.
@@ -126,6 +138,14 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
       vad.start()
       setState('recording')
 
+      // No speech at all after IDLE_TIMEOUT_MS → auto-cancel (nothing to send)
+      idleTimerRef.current = window.setTimeout(() => {
+        cleanup()
+        speechChunksRef.current = []
+        setState('idle')
+        setError('음성이 감지되지 않아 녹음이 종료되었어요.')
+      }, IDLE_TIMEOUT_MS)
+
       stopTimerRef.current = window.setTimeout(() => {
         setError('Recording stopped — max length reached.')
         // we still finalize whatever we captured
@@ -140,8 +160,8 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
   const finalize = useCallback(async (): Promise<Blob | null> => {
     if (state !== 'recording' && state !== 'starting') return null
     setState('stopping')
+    setIdlePrompt(false)
 
-    // Give VAD a beat to flush any in-flight final frame.
     await new Promise((r) => setTimeout(r, 120))
     vadRef.current?.pause()
 
@@ -157,7 +177,72 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
     speechChunksRef.current = []
     setState('idle')
     setError(null)
+    setIdlePrompt(false)
   }, [cleanup])
 
-  return { state, amplitudes, error, start, cancel, finalize }
+  const dismissIdlePrompt = useCallback(() => {
+    setIdlePrompt(false)
+  }, [])
+
+  // Plays a pre-recorded WAV (typically a server-side fixture) through
+  // an AudioContext so the listener can hear it AND so an AnalyserNode
+  // tap drives the same waveform UI that real mic input does. Resolves
+  // with the input blob unchanged so the caller can pipe it straight to
+  // /api/v1/ai/transcriptions, where the StttArtifact cache will hit.
+  const simulate = useCallback(
+    async (blob: Blob): Promise<Blob> => {
+      if (state === 'recording' || state === 'starting') {
+        cleanup()
+      }
+      setError(null)
+      setState('starting')
+
+      try {
+        const ctx = new AudioContext()
+        audioCtxRef.current = ctx
+        const arrayBuffer = await blob.arrayBuffer()
+        // decodeAudioData mutates the buffer on some browsers; pass a copy
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
+
+        const source = ctx.createBufferSource()
+        source.buffer = audioBuffer
+
+        const analyser = ctx.createAnalyser()
+        analyser.fftSize = 64
+        analyserRef.current = analyser
+
+        source.connect(analyser)
+        // Also route to speakers so the recruiter can hear the "speech"
+        analyser.connect(ctx.destination)
+
+        const buf = new Uint8Array(analyser.frequencyBinCount)
+        const tick = () => {
+          analyser.getByteFrequencyData(buf)
+          const next: number[] = []
+          for (let i = 0; i < buf.length; i++) next.push(Math.max(4, (buf[i] / 255) * 60))
+          setAmplitudes(next)
+          rafRef.current = requestAnimationFrame(tick)
+        }
+
+        return await new Promise<Blob>((resolve) => {
+          source.onended = () => {
+            cleanup()
+            setState('idle')
+            resolve(blob)
+          }
+          source.start()
+          setState('recording')
+          tick()
+        })
+      } catch (e: unknown) {
+        cleanup()
+        setError(e instanceof Error ? e.message : 'Failed to play fixture')
+        setState('error')
+        throw e
+      }
+    },
+    [state, cleanup],
+  )
+
+  return { state, amplitudes, error, idlePrompt, start, cancel, finalize, dismissIdlePrompt, simulate }
 }

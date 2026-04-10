@@ -2,7 +2,8 @@ module Api
   module V1
     module Admin
       class MembershipsController < ApplicationController
-        before_action :require_admin!
+        before_action :require_admin!, only: %i[create destroy]
+        before_action :require_user!,  only: %i[destroy_all]
 
         def create
           user = User.find(params.require(:user_id))
@@ -10,7 +11,8 @@ module Api
           membership = Memberships::AdminGrant.call(
             user: user,
             plan: plan,
-            duration_days: params[:duration_days]
+            duration_days:    params[:duration_days],
+            duration_seconds: params[:duration_seconds]
           )
 
           render status: :created, json: {
@@ -22,6 +24,8 @@ module Api
             started_at: membership.started_at.iso8601,
             expires_at: membership.expires_at.iso8601
           }
+        rescue Memberships::AdminGrant::InvalidDuration => e
+          render status: :unprocessable_entity, json: { error: "invalid_duration", message: e.message }
         end
 
         def destroy

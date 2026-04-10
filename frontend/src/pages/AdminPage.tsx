@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { useAdminGrant, useAdminRevoke, useAdminUsers, usePlans } from '../lib/queries'
 import { useUserStore } from '../lib/userStore'
 import { ApiError } from '../lib/api'
-import type { Membership } from '../lib/types'
+import { MembershipRow } from '../components/MembershipRow'
+import { AdminMembershipsSubscriber } from '../components/AdminMembershipsSubscriber'
+import { formatPlanDuration } from '../lib/format'
+import { parseAdminGrantDuration } from '../lib/validation'
 
-const formatDate = (iso: string) =>
-  new Date(iso).toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' })
+type DurationUnit = 'days' | 'seconds'
 
 export function AdminPage() {
   const currentUserId = useUserStore((s) => s.currentUserId)
@@ -15,6 +17,10 @@ export function AdminPage() {
   const revoke = useAdminRevoke()
   const [selectedPlanByUser, setSelectedPlanByUser] = useState<Record<number, number>>({})
   const [durationByUser, setDurationByUser] = useState<Record<number, string>>({})
+  const [unitByUser, setUnitByUser] = useState<Record<number, DurationUnit>>({})
+  // Per-user inline validation error for the duration override field.
+  // Cleared the moment the operator edits the input or switches unit.
+  const [durationErrorByUser, setDurationErrorByUser] = useState<Record<number, string>>({})
 
   if (currentUserId === null) {
     return <div className="empty-state">상단에서 계정을 선택해주세요.</div>
@@ -35,7 +41,8 @@ export function AdminPage() {
   }
 
   return (
-    <div>
+    <div className="page-enter">
+      <AdminMembershipsSubscriber />
       <div className="section-header">
         <h1>유저 관리</h1>
         <span className="muted">{usersQ.data?.length ?? 0}명</span>
@@ -45,6 +52,7 @@ export function AdminPage() {
       {usersQ.data?.map((user) => {
         const planId = selectedPlanByUser[user.id] ?? plansQ.data?.[0]?.id ?? 0
         const duration = durationByUser[user.id] ?? ''
+        const unit = unitByUser[user.id] ?? 'days'
         return (
           <div key={user.id} className="admin-user-card">
             <div className="user-head">
@@ -63,18 +71,13 @@ export function AdminPage() {
               {user.memberships.length === 0 && (
                 <p className="muted">아직 멤버십이 없어요.</p>
               )}
-              {user.memberships.map((m: Membership) => (
-                <div key={m.id} className="membership-row">
-                  <div>
-                    <div className="name">{m.plan.name}</div>
-                    <div className="muted" style={{ marginTop: 2 }}>
-                      {m.source === 'admin_grant' ? '관리자 부여' : '결제'} ·{' '}
-                      {formatDate(m.started_at)} → {formatDate(m.expires_at)}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <span className={`badge ${m.state}`}>{m.state}</span>
-                    {m.state === 'active' && (
+              {user.memberships.map((m) => (
+                <MembershipRow
+                  key={m.id}
+                  membership={m}
+                  metaVariant="source"
+                  actions={
+                    m.state === 'active' ? (
                       <button
                         className="btn danger"
                         onClick={() => revoke.mutate(m.id)}
@@ -82,9 +85,9 @@ export function AdminPage() {
                       >
                         회수
                       </button>
-                    )}
-                  </div>
-                </div>
+                    ) : null
+                  }
+                />
               ))}
             </div>
 
@@ -97,33 +100,72 @@ export function AdminPage() {
               >
                 {plansQ.data?.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} ({p.duration_days}일)
+                    {p.name} ({formatPlanDuration(p)})
                   </option>
                 ))}
               </select>
               <input
                 type="number"
-                placeholder="기간 직접 입력 (일)"
-                value={duration}
-                onChange={(e) =>
-                  setDurationByUser((s) => ({ ...s, [user.id]: e.target.value }))
+                className="duration-input"
+                min={1}
+                step={1}
+                placeholder={
+                  unit === 'seconds' ? '기간 직접 입력 (초)' : '기간 직접 입력 (일)'
                 }
-                style={{ width: 180 }}
+                value={duration}
+                onChange={(e) => {
+                  setDurationByUser((s) => ({ ...s, [user.id]: e.target.value }))
+                  setDurationErrorByUser((s) => {
+                    if (!s[user.id]) return s
+                    const next = { ...s }
+                    delete next[user.id]
+                    return next
+                  })
+                }}
               />
+              <select
+                className="duration-unit"
+                value={unit}
+                onChange={(e) => {
+                  setUnitByUser((s) => ({ ...s, [user.id]: e.target.value as DurationUnit }))
+                  setDurationErrorByUser((s) => {
+                    if (!s[user.id]) return s
+                    const next = { ...s }
+                    delete next[user.id]
+                    return next
+                  })
+                }}
+                title="기간 단위 (만료 시뮬레이션 시 '초' 사용)"
+              >
+                <option value="days">일</option>
+                <option value="seconds">초</option>
+              </select>
               <button
                 className="btn primary"
                 disabled={grant.isPending || !planId}
-                onClick={() =>
+                onClick={() => {
+                  const parsed = parseAdminGrantDuration(duration, unit)
+                  if (!parsed.ok) {
+                    setDurationErrorByUser((s) => ({ ...s, [user.id]: parsed.error }))
+                    return
+                  }
                   grant.mutate({
                     userId: user.id,
                     planId,
-                    durationDays: duration ? Number(duration) : undefined,
+                    durationDays: unit === 'days' && parsed.value !== null ? parsed.value : undefined,
+                    durationSeconds:
+                      unit === 'seconds' && parsed.value !== null ? parsed.value : undefined,
                   })
-                }
+                }}
               >
                 멤버십 부여
               </button>
             </div>
+            {durationErrorByUser[user.id] && (
+              <p className="admin-grant-error" role="alert">
+                {durationErrorByUser[user.id]}
+              </p>
+            )}
           </div>
         )
       })}

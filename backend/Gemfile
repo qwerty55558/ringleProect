@@ -4,8 +4,17 @@ source "https://rubygems.org"
 gem "rails", "~> 7.2.2"
 # Use sqlite3 as the database for Active Record
 gem "sqlite3", ">= 1.4"
-# Use the Puma web server [https://github.com/puma/puma]
-gem "puma", ">= 5.0"
+# Use PostgreSQL in production
+gem "pg", "~> 1.5", group: :production
+# Falcon — fiber-based async web server. Replaces Puma so each open
+# SSE connection (/me/stream, /admin/memberships/stream, /ai/messages)
+# parks a cheap fiber in the event loop instead of pinning a real OS
+# thread. A 16-tab refresh storm becomes 16 fibers (~few KB total) and
+# closed sockets are detected by the event loop in microseconds.
+# See config/environments/*.rb for the matching `:fiber` isolation
+# level and `async_query_executor` settings.
+gem "falcon", "~> 0.51"
+gem "async-http", "~> 0.86"
 # Use Redis adapter to run Action Cable in production
 # gem "redis", ">= 4.0.1"
 

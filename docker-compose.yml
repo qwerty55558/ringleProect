@@ -1,0 +1,61 @@
+services:
+  ringle-db:
+    image: postgres:16-alpine
+    container_name: ringle-db
+    environment:
+      POSTGRES_USER: ringle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ringle_secret}
+      POSTGRES_DB: ringle_production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - ringle-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ringle -d ringle_production"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ringle-backend:
+    image: ghcr.io/qwerty55558/ringleproect/backend:develop
+    platform: linux/amd64
+    container_name: ringle-backend
+    expose:
+      - "3000"
+    env_file: .env
+    environment:
+      RAILS_ENV: production
+      RAILS_LOG_TO_STDOUT: "true"
+      DATABASE_URL: postgres://ringle:${POSTGRES_PASSWORD:-ringle_secret}@ringle-db:5432/ringle_production
+    volumes:
+      - backend_storage:/rails/storage
+    depends_on:
+      ringle-db:
+        condition: service_healthy
+    networks:
+      - ringle-network
+    restart: unless-stopped
+
+  ringle-frontend:
+    image: ghcr.io/qwerty55558/ringleproect/frontend:develop
+    platform: linux/amd64
+    container_name: ringle-frontend
+    expose:
+      - "80"
+    depends_on:
+      - ringle-backend
+    networks:
+      - ringle-network
+    restart: unless-stopped
+
+volumes:
+  backend_storage:
+  postgres_data:
+
+networks:
+  ringle-network:
+    external: true
+    name: ringle-network

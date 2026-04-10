@@ -9,6 +9,8 @@ module Api
             name: p.name,
             price_cents: p.price_cents,
             duration_days: p.duration_days,
+            duration_seconds: p.duration_seconds,
+            duration_label: p.duration_label,
             features: p.features
           }
         }

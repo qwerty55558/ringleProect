@@ -16,5 +16,14 @@ FactoryBot.define do
       features { %w[study talk analysis] }
       duration_days { 60 }
     end
+
+    # Sub-day expiry — used to drive the membership-expired flow in
+    # tests without waiting in real time.
+    factory :short_expiry_plan do
+      sequence(:name) { |n| "Short #{n}" }
+      features { %w[study talk analysis] }
+      duration_days { 1 }
+      duration_seconds { 30 }
+    end
   end
 end

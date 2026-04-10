@@ -1,13 +1,16 @@
-// In-flight TTS request manager.
+// Per-turn audio cache + TTS fetch helper.
 //
 // Two responsibilities:
-//   1. Fire a TTS request as a Promise<Blob> the moment a sentence is ready,
-//      so the audio queue can start playing as soon as the network round-trip
+//   1. fetchTtsBlob — fire a TTS request the moment a sentence is ready,
+//      so AudioQueue can start playing as soon as the network round-trip
 //      completes.
-//   2. Cache the resolved blobs by message id so the user can hit the
-//      replay button without paying for another ElevenLabs request.
+//   2. rememberAudio / getCachedAudio — keep one Blob per turn id (any
+//      kind: ElevenLabs MP3 for the assistant, raw WAV from the user mic)
+//      so the per-bubble replay button can re-play it without re-hitting
+//      the network or re-recording.
 
 import { apiFetch } from './api'
+import { speak } from './speech'
 
 export function fetchTtsBlob(text: string, signal?: AbortSignal): Promise<Blob> {
   return apiFetch<Blob>('/api/v1/ai/speech', {
@@ -17,18 +20,28 @@ export function fetchTtsBlob(text: string, signal?: AbortSignal): Promise<Blob> 
   })
 }
 
-// Per-message TTS cache. We keep one Blob per assistant turn id; calling
-// `replay` reuses it instead of hitting the network again.
+// ElevenLabs → blob. On failure → browser SpeechSynthesis fallback.
+// Returns Blob when ElevenLabs succeeds (cacheable), null when fallback
+// played (audio went through speakers but no blob to cache).
+export async function fetchTtsWithFallback(text: string, signal?: AbortSignal): Promise<Blob | null> {
+  try {
+    return await fetchTtsBlob(text, signal)
+  } catch {
+    await speak(text)
+    return null
+  }
+}
+
 const cache = new Map<string, Blob>()
 
-export function rememberTts(id: string, blob: Blob): void {
+export function rememberAudio(id: string, blob: Blob): void {
   cache.set(id, blob)
 }
 
-export function getCachedTts(id: string): Blob | undefined {
+export function getCachedAudio(id: string): Blob | undefined {
   return cache.get(id)
 }
 
-export function clearTtsCache(): void {
+export function clearAudioCache(): void {
   cache.clear()
 }
