@@ -76,7 +76,7 @@ pnpm dev                      # http://localhost:5173
 | DB      | **SQLite (dev) / PostgreSQL-ready**                              | 셋업 friction 0. ActiveRecord 라 마이그레이션은 PG 도 그대로 동작.                     |
 | File    | **Active Storage (Disk service)**                                | 음성 blob 영속화. S3/GCS 로 갈아끼우려면 `storage.yml` 한 줄.                          |
 | LLM     | **Gemini MODEL_CHAIN (6-model fallback, streaming)**             | 3.1-flash-lite-preview → 3-flash-preview → 2.5-flash → 2.5-flash-lite → 2.0-flash → 2.0-flash-lite. 429/에러 시 자동 폴백. |
-| STT     | **Gemini STT_MODEL_CHAIN (4-model fallback)**                    | 2.5-flash → 2.5-flash-lite → 2.0-flash → 2.0-flash-lite. 오디오 입력 지원 모델만.    |
+| STT     | **Gemini STT_MODEL_CHAIN (6-model fallback, = MODEL_CHAIN)**     | MODEL_CHAIN 과 동일. generateContent + audio inline_data 방식.                        |
 | TTS     | **ElevenLabs + browser SpeechSynthesis fallback**                | ElevenLabs 실패 시 브라우저 내장 TTS 로 자동 전환. 무료 10K chars/월.                  |
 | 번역    | **Google Translate (무료 gtx API)**                               | Gemini 토큰 소모 없이 대화 버블 한글 번역. 30일 Rails.cache.                           |
 | VAD     | **@ricky0123/vad-web (Silero VAD)**                              | 브라우저에서 동작 → 공백 구간 절약 → STT 호출량 감소.                                  |
@@ -280,7 +280,7 @@ bundle exec rspec
 | `requests/conversations_spec`   | 생성/조회/삭제/owner 검증, talk feature 가드, audio_url 직렬화                   |
 | `requests/ai/speech_spec`       | TTS 캐시 헤더 hit/miss, 에러 매핑, talk feature 가드                              |
 | `services/content_filter_spec`   | EN word-boundary + KO substring, borderline 단어 통과 검증                            |
-| `services/gemini_client_spec`    | safety block 감지, safetySettings 주입, STT fallback 체인 (4-model 순회)               |
+| `services/gemini_client_spec`    | safety block 감지, safetySettings 주입, STT fallback 체인 (6-model 순회)               |
 | `requests/sse_throttling_spec`   | rack-attack 30/min 발화, Bus MAX_PER_USER=8 cap, 컨트롤러 에러 이벤트                 |
 | `requests/me_stream_spec`        | 초기 snapshot, query auth, 멤버십 변경/만료 시 자동 푸시                               |
 
@@ -346,7 +346,7 @@ backend/
 │  ├─ models/   User, Membership, MembershipPlan, Payment,
 │  │            Conversation, Message, Analysis, TtsArtifact, SttArtifact, StudyMaterial
 │  └─ services/
-│     ├─ gemini_client.rb          # LLM streaming + STT (4-model fallback)
+│     ├─ gemini_client.rb          # LLM streaming + STT (6-model fallback)
 │     ├─ eleven_labs_client.rb
 │     ├─ google_translate_client.rb
 │     ├─ payment_gateway.rb
