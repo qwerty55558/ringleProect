@@ -10,9 +10,6 @@ dist/
 build/
 
 # Env files
-.env
-.env.local
-.env.*.local
 
 # Editor / OS
 .DS_Store
@@ -22,3 +19,8 @@ build/
 
 # Logs
 *.log
+# Environment files (auto-managed)
+.env
+.env.*
+!.env.example
+!.env.sample
